@@ -1,9 +1,9 @@
 #ifndef BVH_H
 #define BVH_H
 
-#include "aabb.h"
+#include "aabb.hpp"
 #include "triangle.h"
-#include "hittable.h"
+#include "hittable.hpp"
 
 #include <vector>
 #include <algorithm>

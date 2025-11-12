@@ -1,14 +1,15 @@
-#ifndef MATERIAL_H
-#define MATERIAL_H
+#ifndef MATERIAL_HPP
+#define MATERIAL_HPP
 
-#include "color.h"
+#include "color.hpp"
 #include <cmath>
 
 enum class material_type
 {
     diffuse,
     mirror,
-    transparent
+    transparent,
+    light
 };
 
 class material
@@ -25,6 +26,13 @@ public:
     float transparency;       // = 1.0f - reflectivity; // 0 = opaque, 1 = fully transparent
     color transmission_color; // colored tint of transparent object
     float ior = 1.5f;         // Index of refraction
+
+    // for (area) lights
+    color emission = color(0, 0, 0);
+    bool is_emissive() const
+    {
+        return (emission[0] > 0 || emission[1] > 0 || emission[2] > 0);
+    }
 
 private:
 };

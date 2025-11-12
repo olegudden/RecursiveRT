@@ -1,8 +1,8 @@
-#ifndef HITTABLE_H
-#define HITTABLE_H
+#ifndef HITTABLE_HPP
+#define HITTABLE_HPP
 
-#include "ray.h"
-#include "material.h"
+#include "ray.hpp"
+#include "material.hpp"
 
 struct hit_info
 {

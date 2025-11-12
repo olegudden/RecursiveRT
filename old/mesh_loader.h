@@ -1,7 +1,7 @@
 #ifndef MESH_LOADER_H
 #define MESH_LOADER_H
 
-#include "vec3.h"
+#include "vec3.hpp"
 #include "triangle.h"
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "..\tinyobjloader\tiny_obj_loader.h"

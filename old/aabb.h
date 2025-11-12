@@ -1,8 +1,8 @@
 #ifndef AABB_H
 #define AABB_H
 
-#include "hittable.h"
-#include "vec3.h"
+#include "hittable.hpp"
+#include "vec3.hpp"
 #include "triangle.h"
 
 #include <vector>

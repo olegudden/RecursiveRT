@@ -1,8 +1,8 @@
 #ifndef LIGHT_SOURCE_H
 #define LIGHT_SOURCE_H
 
-#include "vec3.h"
-#include "color.h"
+#include "vec3.hpp"
+#include "color.hpp"
 
 class light_source
 {
