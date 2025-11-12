@@ -1,13 +1,13 @@
 #ifndef TRIANGLE_H
 #define TRIANGLE_H
 
-#include "hittable.h"
-#include "vec3.h"
-#include "material.h"
+#include "hittable.hpp"
+#include "vec3.hpp"
+#include "material.hpp"
 // #include "object.h"
 
-#include ".\glm\glm.hpp"
-#include ".\glm\gtc\matrix_transform.hpp"
+#include "..\glm\glm.hpp"
+#include "..\glm\gtc\matrix_transform.hpp"
 
 class object;
 

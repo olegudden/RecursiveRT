@@ -1,13 +1,5 @@
-#ifndef COLOR_H
-#define COLOR_H
-
-#include "vec3.h"
-
-#include <iostream>
-#include <algorithm>
-// #include <algorithm>
-
-using color = vec3;
+#include "../hpp/color.hpp"
+#include <cmath>
 
 color clamp_color(const color &c)
 {
@@ -25,14 +17,15 @@ vec3 reinhard_tonemap(const vec3 &c)
         c.z() / (1.0f + c.z()));
 }
 
-color reinhard_extended(const color &c, float white_point = 4.0f)
+color reinhard_extended(const color &c, float white_point)
 {
-    return color(c.x() * (1.0f + c.x() / (white_point * white_point)) / (1.0f + c.x()),
-                 c.y() * (1.0f + c.y() / (white_point * white_point)) / (1.0f + c.y()),
-                 c.z() * (1.0f + c.z() / (white_point * white_point)) / (1.0f + c.z()));
+    return color(
+        c.x() * (1.0f + c.x() / (white_point * white_point)) / (1.0f + c.x()),
+        c.y() * (1.0f + c.y() / (white_point * white_point)) / (1.0f + c.y()),
+        c.z() * (1.0f + c.z() / (white_point * white_point)) / (1.0f + c.z()));
 }
 
-color exposure_tonemap(const color &c, float exposure = 1.0f)
+color exposure_tonemap(const color &c, float exposure)
 {
     return color(
         1.0f - std::exp(-c.x() * exposure),
@@ -43,14 +36,16 @@ color exposure_tonemap(const color &c, float exposure = 1.0f)
 color aces_tonemap(const color &c)
 {
     color a = c * 0.6f; // tweak this scale
-    return (a * (2.51f * a + color(0.03f, 0.03f, 0.03f))) / (a * (2.43f * a + color(0.59f, 0.59f, 0.59f)) + color(0.14f, 0.14f, 0.14f));
+    return (a * (2.51f * a + color(0.03f, 0.03f, 0.03f))) /
+           (a * (2.43f * a + color(0.59f, 0.59f, 0.59f)) + color(0.14f, 0.14f, 0.14f));
 }
 
-vec3 gamma_correct(const vec3 &c, float gamma = 2.2f)
+vec3 gamma_correct(const vec3 &c, float gamma)
 {
-    return color(std::pow(c.x(), 1.0f / gamma),
-                 std::pow(c.y(), 1.0f / gamma),
-                 std::pow(c.z(), 1.0f / gamma));
+    return color(
+        std::pow(c.x(), 1.0f / gamma),
+        std::pow(c.y(), 1.0f / gamma),
+        std::pow(c.z(), 1.0f / gamma));
 }
 
 void std_write_color(std::ostream &out, const color &pixel_color)
@@ -69,13 +64,9 @@ void write_color(std::ostream &out, const color &pixel_color)
     // mapped = gamma_correct(mapped);
     // mapped = clamp_color(mapped);
 
-    // Translate the [0,1] component values to the byte range [0,255].
     int rbyte = static_cast<int>(255.999 * mapped.x());
     int gbyte = static_cast<int>(255.999 * mapped.y());
     int bbyte = static_cast<int>(255.999 * mapped.z());
 
-    // Write out the pixel color components.
     out << rbyte << ' ' << gbyte << ' ' << bbyte << '\n';
 }
-
-#endif

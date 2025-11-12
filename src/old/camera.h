@@ -1,15 +1,15 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
-#include "hittable.h"
-#include "color.h"
+#include "hittable.hpp"
+#include "color.hpp"
 #include "triangle.h"
-#include "light_source.h"
-#include "mesh_loader.h"
-#include "material.h"
-#include "bvh.h"
-#include "object.h"
-#include "ray.h"
+#include "light_source.hpp"
+#include "mesh_loader.hpp"
+#include "material.hpp"
+#include "bvh.hpp"
+// #include "object.h"
+#include "ray.hpp"
 
 #include <vector>
 #include <fstream>
