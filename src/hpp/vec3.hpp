@@ -56,4 +56,6 @@ vec3 from_glm(const glm::vec3 &v);
 
 vec3 perpendicular(const vec3 &v);
 
+void make_orthonormal_basis(const vec3 &N, vec3 &T, vec3 &B);
+
 #endif // VEC3_H

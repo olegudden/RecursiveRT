@@ -8,17 +8,19 @@
 // Forward declaration to avoid circular include
 class object;
 
-// If you need glm in the .cpp, include it there instead of here
-
 class triangle : public hittable
 {
 public:
-    static int64_t triangleTests;
+    // static int64_t triangleTests;
 
     triangle(const point3 &v0, const point3 &v1, const point3 &v2);
-    triangle(const point3 &v0, const point3 &v1, const point3 &v2,
+    /* triangle(const point3 &v0, const point3 &v1, const point3 &v2,
              const vec3 &n0, const vec3 &n1, const vec3 &n2,
-             const material &mat, material_type mt, object *obj = nullptr);
+             const material &mat, material_preset mt, object *obj = nullptr); // material_type */
+    triangle(const point3 &a, const point3 &b, const point3 &c,
+             const vec3 &n0, const vec3 &n1, const vec3 &n2,
+             const material &mat, const material_type &mt,
+             object *parent);
 
     bool hit(const ray &r, float t_min, float t_max, hit_info &hi) const override;
     point3 centroid() const;

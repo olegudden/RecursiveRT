@@ -17,4 +17,6 @@ vec3 gamma_correct(const vec3 &c, float gamma = 2.2f);
 void std_write_color(std::ostream &out, const color &pixel_color);
 void write_color(std::ostream &out, const color &pixel_color);
 
+float luminance(const vec3 &c);
+
 #endif // COLOR_HPP

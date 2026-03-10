@@ -126,3 +126,20 @@ vec3 perpendicular(const vec3 &v)
     else
         return unit_vector(cross(v, vec3(0, 1, 0)));
 }
+
+// Builds an orthonormal basis (T, B, N) from a unit-length normal N
+// T = tangent, B = bitangent
+void make_orthonormal_basis(const vec3 &n, vec3 &t, vec3 &b)
+{
+    if (n.z() < -0.9999999f)
+    {
+        t = vec3(0, -1, 0);
+        b = vec3(-1, 0, 0);
+        return;
+    }
+
+    float a = 1.0f / (1.0f + n.z());
+    float b2 = -n.x() * n.y() * a;
+    t = vec3(1.0f - n.x() * n.x() * a, b2, -n.x());
+    b = vec3(b2, 1.0f - n.y() * n.y() * a, -n.y());
+}
