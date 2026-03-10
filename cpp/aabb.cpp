@@ -29,9 +29,9 @@ aabb::aabb(std::vector<triangle> mesh)
     max_xyz = point3(max_x, max_y, max_z);
 }
 
-bool aabb::hit(const ray &r, float t_min, float t_max, hit_info &hi) const
+/* bool aabb::hit(const ray &r, float t_min, float t_max, hit_info &hi) const
 {
-    total_tests++;
+    // total_tests++;
     const float EPS_DIR = 1e-8f;
     float t_enter = t_min;
     float t_exit = t_max;
@@ -58,6 +58,39 @@ bool aabb::hit(const ray &r, float t_min, float t_max, hit_info &hi) const
     }
     hi.t = t_enter;
     hi.p = r.at(hi.t);
+    return true;
+} */
+
+bool aabb::hit(const ray &r, float t_min, float t_max, hit_info &) const
+{
+    const float EPS_DIR = 1e-8f;
+    float t_enter = t_min;
+    float t_exit = t_max;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        float origin = r.origin()[i];
+        float dir = r.direction()[i];
+
+        if (fabs(dir) < EPS_DIR)
+        {
+            if (origin < min_xyz[i] || origin > max_xyz[i])
+                return false;
+            continue;
+        }
+
+        float inv = 1.0f / dir;
+        float t1 = (min_xyz[i] - origin) * inv;
+        float t2 = (max_xyz[i] - origin) * inv;
+        if (t1 > t2)
+            std::swap(t1, t2);
+
+        t_enter = std::max(t_enter, t1);
+        t_exit = std::min(t_exit, t2);
+
+        if (t_enter > t_exit)
+            return false;
+    }
     return true;
 }
 

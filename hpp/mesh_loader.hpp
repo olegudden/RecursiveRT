@@ -17,7 +17,7 @@ struct object
 {
     std::vector<triangle> mesh;
     aabb box;
-    material_type mt;
+    material_preset mt; // material_type
     std::vector<area_light> lights;
 
     glm::mat4 transform;
@@ -25,15 +25,21 @@ struct object
     glm::mat4 transpose_transform;
 
     object();
-    object(const std::vector<triangle> &m, const aabb &b, material_type mt, const glm::mat4 &tform, const std::vector<area_light> &als);
+    // object(const std::vector<triangle> &m, const aabb &b, material_preset mt, const glm::mat4 &tform, const std::vector<area_light> &als); // material_type
+    object(std::vector<triangle> mesh,
+           aabb box,
+           glm::mat4 transform,
+           const std::vector<area_light> &lights);
 };
 
+std::vector<std::vector<area_light>> cluster_light_triangles(const std::vector<area_light> &tris);
 area_light merge_light_triangles(const std::vector<area_light> &tris);
 
 object obj_to_mesh(const char *objpath,
                    const char *mtlpath,
                    vec3 offset,
-                   material_type mt,
+                   material_preset preset,
+                   material_type mt, // material_type
                    glm::mat4 tmat,
                    color c);
 

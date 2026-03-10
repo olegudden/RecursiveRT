@@ -70,3 +70,8 @@ void write_color(std::ostream &out, const color &pixel_color)
 
     out << rbyte << ' ' << gbyte << ' ' << bbyte << '\n';
 }
+
+float luminance(const vec3 &c)
+{
+    return 0.2126f * c.x() + 0.7152f * c.y() + 0.0722f * c.z();
+}

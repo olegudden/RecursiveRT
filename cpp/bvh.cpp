@@ -60,6 +60,7 @@ bool bvh::hit_node(bvh_node *node, const ray &r, float t_min, float t_max, hit_i
 
     stats.total_aabb_tests++;
 
+    // hit_info dummy; // here
     if (!node->box.hit(r, t_min, t_max, final_hi))
         return false;
 
