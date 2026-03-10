@@ -618,7 +618,7 @@ color camera::nee_rec_trace(const ray &r, const bvh &bvh_tree, int depth, const 
     // 1) Direct lighting via NEE (one sample)
     // ----------------------------------------------------
     color Ld(0, 0, 0);
-    int light_samples = 4;
+    int light_samples = 1;
 
     if (!lights.empty())
     {
