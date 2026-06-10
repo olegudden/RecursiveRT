@@ -17,7 +17,7 @@ int main()
     auto start = std::chrono::system_clock::now();
 
     // Transformations TODO: modelview transform instead of geometry
-    glm::mat4 tformLight = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.3f, 0.0f));
+    /* glm::mat4 tformLight = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.3f, 0.0f));
     tformLight = glm::scale(tformLight, glm::vec3(0.01f, 0.01f, 0.01f));
 
     glm::mat4 tformSphere = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.5f, 0.9f)); // 0.0,0.4,0.3, scale 0.3
@@ -37,14 +37,14 @@ int main()
 
     glm::mat4 tformCornell = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -0.5f, 0.8f));      // 0,-0.5,0.8
     tformCornell = glm::rotate(tformCornell, glm::radians(-20.0f), glm::vec3(1.0f, 0.0f, 0.0f)); // x = -20
-    // tformCornell = glm::rotate(tformCornell, glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    // tformCornell = glm::rotate(tformCornell, glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f)); */
 
     glm::mat4 tformCornellSphere = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.8f)); // 0,-0.5,0.8
     tformCornellSphere = glm::rotate(tformCornellSphere, glm::radians(-20.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 
     glm::mat4 tform = glm::mat4(1.0f); // identity matrix
 
-    glm::mat4 tformTeapot = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.85f)); // (-0.5,-0.2f,1.0f)
+    /* glm::mat4 tformTeapot = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.85f)); // (-0.5,-0.2f,1.0f)
     tformTeapot = glm::scale(tformTeapot, glm::vec3(0.008f, 0.008f, 0.008f));
 
     glm::mat4 tformSuzanne = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.1f, -0.2f)); // y=0.2,z=-0.3
@@ -70,7 +70,7 @@ int main()
     tformLiving = glm::rotate(tformLiving, glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
     glm::mat4 tformSibenik = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 10.0f, -12.0f)); // y 12, z -12
-    tformSibenik = glm::rotate(tformSibenik, glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    tformSibenik = glm::rotate(tformSibenik, glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)); */
 
     TextureManager tex_manager;
 
