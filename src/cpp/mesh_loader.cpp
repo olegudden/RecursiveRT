@@ -1,7 +1,7 @@
 #include "../hpp/mesh_loader.hpp"
 
 #define TINYOBJLOADER_IMPLEMENTATION
-#include "..\..\tinyobjloader\tiny_obj_loader.h"
+#include "..\..\external\tinyobjloader\tiny_obj_loader.h"
 
 object::object() = default;
 

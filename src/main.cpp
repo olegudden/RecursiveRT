@@ -2,7 +2,7 @@
 #include "hpp/mesh_loader.hpp"
 #include "hpp/bvh.hpp"
 #include "hpp/texture.hpp"
-#include "../glm/gtc/matrix_transform.hpp"
+#include "../external/glm/gtc/matrix_transform.hpp"
 
 #include <chrono>
 
@@ -141,11 +141,11 @@ int main()
     // RENDER
     auto render_start = std::chrono::system_clock::now(); // bvh traversal runtime check
 
-    aabb::total_tests = 0;
+    // aabb::total_tests = 0;
 
     cam.render(world, area_lights, bvh_tree, guiding_grid, tex_manager);
 
-    std::cout << "Total AABB tests: " << aabb::total_tests << "\n";
+    // std::cout << "Total AABB tests: " << aabb::total_tests << "\n";
 
     auto render_end = std::chrono::system_clock::now();
     bvh_tree.stats.traverse_time_ms = std::chrono::duration<double, std::milli>(render_end - render_start).count();
@@ -166,7 +166,7 @@ int main()
     std::cout << "Total runtime (in s): " << elapsed << '\n';
 
     // PPM Viewer
-    int working = system(".\\ppm-viewer\\ppm.exe image.ppm");
+    int working = system(".\\external\\ppm-viewer\\ppm.exe image.ppm");
     if (working != 0)
     {
         std::cerr << "Failed to launch PPM viewer.\n";

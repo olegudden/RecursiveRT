@@ -7,7 +7,7 @@
 class aabb : public hittable
 {
 public:
-    inline static long long total_tests = 0;
+    // inline static long long total_tests = 0;
 
     aabb();
     aabb(const point3 &min_xyz, const point3 &max_xyz);

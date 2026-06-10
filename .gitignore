@@ -1,0 +1,31 @@
+# ==========================================
+# 3D Assets & Rendered Outputs (Heavy Files)
+# ==========================================
+objects/
+*.ppm
+image.png
+
+# ==========================================
+# Build Artifacts & Executables
+# ==========================================
+build/
+*.exe
+*.log
+error.txt
+
+# ==========================================
+# Local Research, Notes & Side Folders
+# ==========================================
+.vscode/
+RTplots/
+images/
+notes/
+papers/
+ppm-viewer/
+external/ 
+
+# ==========================================
+# System Clutter
+# ==========================================
+desktop.ini
+.DS_Store

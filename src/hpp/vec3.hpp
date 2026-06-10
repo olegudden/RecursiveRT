@@ -1,7 +1,7 @@
 #ifndef VEC3_H
 #define VEC3_H
 
-#include "../../glm/glm.hpp"
+#include "../../external/glm/glm.hpp"
 #include <ostream>
 
 class vec3
