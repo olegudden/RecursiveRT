@@ -1,21 +1,15 @@
 #include "../hpp/triangle.hpp"
-#include <cmath>
-
-// int64_t triangle::triangleTests = 0;
+#include <iostream>
 
 triangle::triangle(const point3 &v0, const point3 &v1, const point3 &v2)
     : v0(v0), v1(v1), v2(v2) {}
 
-/* triangle::triangle(const point3 &v0, const point3 &v1, const point3 &v2,
-                   const vec3 &n0, const vec3 &n1, const vec3 &n2,
-                   const material &mat, material_preset &mt, object *obj) // material_type
-    : v0(v0), v1(v1), v2(v2), n0(n0), n1(n1), n2(n2),
-      mat(mat), mt(mt), obj_ptr(obj){} */
 triangle::triangle(const point3 &a, const point3 &b, const point3 &c,
                    const vec3 &n0, const vec3 &n1, const vec3 &n2,
+                   const vec3 &uv0, const vec3 &uv1, const vec3 &uv2,
                    const material &mat, const material_type &mt,
-                   object *parent) : v0(a), v1(b), v2(c), n0(n0), n1(n1), n2(n2),
-                                     mat(mat), mt(mt), obj_ptr(parent) {}
+                   object *parent, const float area) : v0(a), v1(b), v2(c), n0(n0), n1(n1), n2(n2), uv0(uv0), uv1(uv1), uv2(uv2),
+                                                       mat(mat), mt(mt), obj_ptr(parent), area(area) {}
 
 /* bool triangle::hit(const ray &r, float t_min, float t_max, hit_info &hi) const
 {
@@ -107,19 +101,18 @@ bool triangle::hit(const ray &r, float t_min, float t_max, hit_info &hi) const
     // compute interpolated shading normal using original floats (still fine)
     hi.t = t;
 
-    /* vec3 outward_normal = unit_vector(cross(edge1, edge2));
-    // front-face detection
-    hi.front_face = dot(r.direction(), outward_normal) < 0.0;
-    // choose correct normal orientation
-    hi.normal = hi.front_face ? outward_normal : -outward_normal; */
-
     // also store shading normal (interpolated or face normal)
-    hi.shading_normal = unit_vector((1 - u - v) * n0 + u * n1 + v * n2);
+    float w = (1.0f - u - v);
+    hi.shading_normal = unit_vector(w * n0 + u * n1 + v * n2);
     hi.normal = unit_vector(cross(edge1, edge2));
 
     hi.p = r.at(t);
     hi.mat = this->mat;
     hi.mt = this->mt;
+
+    // textures
+    hi.u = w * uv0.x() + u * uv1.x() + v * uv2.x();
+    hi.v = w * uv0.y() + u * uv1.y() + v * uv2.y();
 
     return true;
 }
@@ -129,13 +122,19 @@ point3 triangle::centroid() const
     return (v0 + v1 + v2) / 3.0f;
 }
 
-point3 triangle::get_v0() { return v0; }
+/* point3 triangle::get_v0() { return v0; }
 point3 triangle::get_v1() { return v1; }
 point3 triangle::get_v2() { return v2; }
 
-material_type triangle::get_material_type() const { return mt; }
+point3 triangle::get_n0() { return n0; }
+
+material_type triangle::get_material_type() const
+{
+    return mt;
+}
 
 void triangle::set_obj(object *o)
 {
     obj_ptr = o;
 }
+*/

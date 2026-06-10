@@ -2,10 +2,7 @@
 #define VEC3_H
 
 #include "../../glm/glm.hpp"
-#include "../../glm/gtc/matrix_transform.hpp"
-
-#include <cmath>
-#include <iostream>
+#include <ostream>
 
 class vec3
 {

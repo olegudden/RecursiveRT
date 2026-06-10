@@ -1,5 +1,4 @@
 #include "../hpp/ray.hpp"
-#include <cmath>
 
 // int ray::ray_counter = 0;
 // static int prints = 0;

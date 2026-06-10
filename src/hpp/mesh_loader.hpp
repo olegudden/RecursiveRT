@@ -1,15 +1,8 @@
 #ifndef MESH_LOADER_HPP
 #define MESH_LOADER_HPP
 
-#include "vec3.hpp"
-#include "triangle.hpp"
-#include "aabb.hpp"
-#include "material.hpp"
-#include "color.hpp"
 #include "light_source.hpp"
-
-#include "../../glm/glm.hpp"
-#include "../../glm/gtc/matrix_transform.hpp"
+#include "texture.hpp"
 
 #include <vector>
 
@@ -41,6 +34,6 @@ object obj_to_mesh(const char *objpath,
                    material_preset preset,
                    material_type mt, // material_type
                    glm::mat4 tmat,
-                   color c);
+                   color c, TextureManager &tex_manager);
 
 #endif // MESH_LOADER_HPP

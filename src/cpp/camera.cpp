@@ -1,21 +1,17 @@
 #define _USE_MATH_DEFINES
 
 #include "../hpp/camera.hpp"
-#include "../hpp/light_source.hpp"
 #include "../hpp/error.hpp"
-#include <algorithm>
+#include "../hpp/texture.hpp"
 #include <iostream>
 #include <omp.h>
-#include <cfloat>
-#include <cmath>
 
-#include <atomic>
-
-static std::atomic_int tir_count = 0;
-static int print_count = 0;
-
-const int MAX_DEPTH = 5;
+const int MAX_DEPTH = 6;
 const int MIN_DEPTH = 1;
+
+point3 test_point(0, 0, 0);
+
+// static int lightpath_counter = 0;
 
 void camera::build_orthonormal_basis(vec3 v, vec3 &t, vec3 &b)
 {
@@ -56,6 +52,46 @@ float camera::power_heuristic(float pdf_a, float pdf_b) // try different betas
 color camera::brdf_diffuse(const material &m)
 {
     return m.diffuse / M_PI;
+}
+
+color camera::tex_diffuse(hit_info &hi)
+{
+    color diffuse_color = hi.mat.diffuse;
+
+    if (hi.mat.has_diffuse_tex)
+    {
+        // Look up the actual color from the loaded image
+        diffuse_color = sample_texture(data, width, height, hi.u, hi.v);
+
+        checker_texture my_checker(color(1, 1, 1), color(0, 0, 0), 10.0f);
+        diffuse_color = my_checker.sample(hi.u, hi.v);
+
+        /* color dark_brown(0.3f, 0.15f, 0.05f); // wood
+        color light_brown(0.6f, 0.4f, 0.2f);
+        color dark_grey(0.4f, 0.4f, 0.35f); // marble
+        color white(1.0f, 1.0f, 1.0f);
+        wood_texture procedural_wood(dark_grey, white, 40.0f);
+        diffuse_color = procedural_wood.sample(hi.u, hi.v); */
+    }
+
+    // Now use 'diffuse_color' for your BRDF calculations instead of hi.mat.diffuse
+    color fr = (diffuse_color / M_PI);
+    return fr;
+}
+
+// 2. Update your diffuse evaluation inside your path tracer
+color camera::tex_diffuse_new(const hit_info &hi, TextureManager &tex_manager)
+{
+    color diffuse_color = hi.mat.diffuse;
+
+    if (hi.mat.has_diffuse_tex)
+    {
+        // Dynamically fetch the pixel data belonging to this specific polygon's material index
+        diffuse_color = tex_manager.sample_texture_from_cache(tex_manager, hi.mat.diffuse_tex_id, hi.u, hi.v);
+    }
+
+    // Multiply the fetched color by 1/PI for diffuse Lambertian properties
+    return diffuse_color / M_PI;
 }
 
 color camera::brdf_specular(const material &m, const float s, const vec3 &refl_dir, const vec3 &wo)
@@ -694,19 +730,30 @@ color camera::nee_rec_trace(const ray &r, const bvh &bvh_tree, int depth, const 
     return Ld + L_indirect; // + L_indirect
 }
 
-color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
+color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, TextureManager &tex_manager)
 {
-    const float eps = 1e-6f; //-6
+    const float eps = 1e-4f; //-6 TODO dynamic (based on how far away the hit point is from the world origin)
     if (depth >= MAX_DEPTH)
+    {
+        if (depth == 0)
+            timedOut++;
         return color(0, 0, 0);
-
+    }
     // intersect
     hit_info hi;
     if (!bvh_tree.hit(r, eps, FLT_MAX, hi))
-        return color(0, 0, 0); // or return sky
+    {
+        if (depth == 0)
+            misses++;
+        return color(0.2, 0.5, 0.8); // or return sky
+    }
     // emitter
     if (hi.mat.is_emissive())
+    {
+        if (depth == 0)
+            directHits++;
         return hi.mat.emission;
+    }
 
     // geometric & shading normals
     vec3 N = unit_vector(hi.normal);          // geometric normal (possibly not oriented)
@@ -715,14 +762,35 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
     bool front_face = dot(dir_in, N) < 0.0f;
     vec3 n = front_face ? N : -N; // oriented shading normal (use this everywhere) ?
 
+    // ----------------------------------------------------
+    // DIAGNOSTIC CODE: Normal Visualizer
+    // ----------------------------------------------------
+
+    // Choose which normal you want to inspect:
+    // Test 1:
+    /* vec3 visual_n = hi.normal; // Flat Geometric Normal
+    // Test 2: vec3 visual_n = hi.shading_normal; // Smoothed Vertex Normal
+
+    // Map the coordinates from [-1.0, 1.0] to a safe color range [0.0, 1.0]
+    float red = (visual_n.x() + 1.0f) * 0.5f;
+    float g = (visual_n.y() + 1.0f) * 0.5f;
+    float b = (visual_n.z() + 1.0f) * 0.5f;
+
+    // Return this color immediately to the screen, skipping all lighting math
+    return color(red, g, b); */
+
     vec3 wi = -dir_in;
     vec3 refl_dir = reflect(dir_in, n);
 
-    const float p_survive = 0.7f; // RR
+    const float p_survive = 0.9f; // RR
 
     // glossy specular lobe
-    float s = phong_exponent_from_smoothness(hi.mat.smoothness);
-    // float s = hi.mat.spec_exponent;
+    // float s = phong_exponent_from_smoothness(hi.mat.smoothness);
+    float s = hi.mat.spec_exponent;
+
+    // local probabilites for light selection
+    std::vector<float> local_probs(lights.size());
+    local_probs = compute_local_light_weights(hi.p, n, lights);
 
     // -------------------------
     // 1) Delta/specular materials (handled first -> no NEE) // TODO RR for Delta materials
@@ -750,14 +818,10 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
         // refl_dir = unit_vector(refl_dir);
 
         bool can_refract = refract(dir_in, n, eta_ratio, refr_dir);
-        /* if (can_refract)
-        {
-            refr_dir = unit_vector(refr_dir);
-        } */
 
         // Reflection ray
         ray refl_ray(hi.p + refl_dir * eps, refl_dir);
-        color col_refl = newest_rec_trace(refl_ray, bvh_tree, depth + 1, lights);
+        color col_refl = newest_rec_trace(refl_ray, bvh_tree, depth + 1, lights, tex_manager);
 
         if (!can_refract)
             return col_refl; // Total internal reflection
@@ -765,13 +829,7 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
         // Refraction ray
         ray refr_ray(hi.p + refr_dir * eps, refr_dir);
 
-        /* hit_info hi2;
-        if (!bvh_tree.hit(refr_ray, eps, FLT_MAX, hi2))
-            return color(0, 0, 0); // escaped scene
-        float dist = hi2.t;        // THIS is the real distance traveled inside the medium
-        vec3 attenuation = exp(-hi.mat.absorption * dist); */
-
-        color col_refr = newest_rec_trace(refr_ray, bvh_tree, depth + 1, lights); // TODO colored transparency (attenuation *)
+        color col_refr = newest_rec_trace(refr_ray, bvh_tree, depth + 1, lights, tex_manager); // TODO colored transparency (attenuation *)
 
         // Mix reflection & refraction
         return R * col_refl + (1.0f - R) * col_refr;
@@ -780,7 +838,7 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
     // --------------------------------------------------
     // Delta specular (perfect mirror)
     // --------------------------------------------------
-    if (hi.mat.is_delta_specular)
+    /* if (hi.mat.is_delta_specular)
     {
 
         color fr = hi.mat.specular; // mirror color (F0)
@@ -789,36 +847,81 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
 
         // delta: no MIS, no NEE, no cosine
         return newest_rec_trace(new_ray, bvh_tree, depth + 1, lights) * fr;
-    }
+    } */
 
     int light_samples = 1;
     int brdf_samples = 1;
 
-    float SPEC_PROB = hi.mat.specular_prob;
+    // float SPEC_PROB = hi.mat.specular_prob;
+    float SPEC_PROB = luminance(hi.mat.specular);
     float DIFF_PROB = 1.0f - SPEC_PROB;
 
     TraceResult tr;
+
     // -------------------------
     // 2) NEE: direct lighting
     // -------------------------
-
     color sum_light(0, 0, 0);
     if (!lights.empty())
     {
         // const area_light &L = lights[0];
-        const area_light &L = sample_multiple_AL(lights); // HERE
 
-        const float area = std::max(L.area, 1e-8f);
-        auto pts = stratified_sample_light(L, light_samples);
+        // importance
+        int chosen_id = 0;
+        float selected_weight = 1.0f;
+        const area_light &L = sample_multiple_AL(lights, local_probs, selected_weight, chosen_id); // HERE
 
-        for (const point3 &lp : pts)
+        // random
+        // const area_light &L = lights[rand() % lights.size()];
+        // float selected_weight = 1.0f / lights.size();
+
+        /* std::vector<light_sample> pts; // random
+        for (int s = 0; s < light_samples; s++)
         {
-            vec3 Lvec = lp - hi.p;
-            float dist = Lvec.length();
-            vec3 wo = Lvec / dist; // unit_vector()
+            light_sample sample_data;
+            // sample() updates sample_data.normal and sample_data.pdf_area internally
+            sample_data.p = sample(sample_data.normal, L, sample_data.pdf_area);
+            pts.push_back(sample_data);
+        } */
 
-            float cos_s = dot(n, wo); //-wo
-            float cos_l = dot(L.normal, -wo);
+        // stratified
+        int grid_dim = static_cast<int>(std::sqrt(light_samples));
+        int total_actual_samples = grid_dim * grid_dim;
+
+        std::vector<light_sample> pts;
+        pts.reserve(total_actual_samples);
+
+        // one sample
+        /* light_sample ls;
+        ls.p = sample(ls.normal, L, ls.pdf_area);
+        pts.push_back(ls); */
+
+        // stratified
+        for (int y = 0; y < grid_dim; y++)
+        {
+            for (int x = 0; x < grid_dim; x++)
+            {
+                // Jittered stratification: maps x and y evenly into [0.0, 1.0]
+                float r1 = (static_cast<float>(x) + rand_float()) / static_cast<float>(grid_dim);
+                float r2 = (static_cast<float>(y) + rand_float()) / static_cast<float>(grid_dim);
+
+                light_sample sample_data;
+                // Pass r1 and r2 into your stratified triangle sampler
+                sample_data.p = sample_stratified(sample_data.normal, L, sample_data.pdf_area, r1, r2);
+                pts.push_back(sample_data);
+            }
+        }
+        // auto pts = stratified_sample_light(L, light_samples);
+
+        for (const light_sample &ls : pts)
+        {
+            vec3 Lvec = ls.p - hi.p;
+            float dist_squared = Lvec.length_squared();
+            float dist = std::sqrt(dist_squared);
+            vec3 wo = Lvec / dist;
+
+            float cos_s = dot(n, wo);
+            float cos_l = dot(ls.normal, -wo);
 
             if (cos_s <= 0 || cos_l <= 0)
                 continue;
@@ -827,33 +930,33 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
             cos_l = std::min(cos_l, 1.0f);
 
             // visibility
-            if (!visible(hi.p + wo * eps, lp, bvh_tree))
+            if (!visible(hi.p + wo * eps, ls.p, bvh_tree))
+            {
                 continue;
+            }
 
             // light PDF in solid angle domain
-            float pdf_light = (dist * dist / cos_l) / area;
-
-            // pdf_light *= L.selection_weight; // HERE
+            float pdf_light = (dist_squared / cos_l) * ls.pdf_area;
+            float pdf_light_new = (pdf_light * selected_weight);
 
             // --- FULL BRDF evaluation (same as NEE)
-            color fr = brdf_diffuse(hi.mat) + brdf_specular(hi.mat, s, refl_dir, wo);
+            // color fr = brdf_diffuse(hi.mat) + brdf_specular(hi.mat, s, refl_dir, wo);
+            color fr = tex_diffuse_new(hi, tex_manager) + brdf_specular(hi.mat, s, refl_dir, wo); // tex_diffuse_new(hi, tex_manager) +
+
             float phong_pdf = (s + 2.0f) * std::pow(std::max(dot(refl_dir, wo), 0.0f), s) / (2.0f * M_PI); // (s + 2.0f) * std::pow(std::max(dot(refl_dir, wo), 0.0f), s) / (2.0f * M_PI)
 
             float pdf_brdf = SPEC_PROB * phong_pdf + DIFF_PROB * (cos_s / M_PI); // NO MIS
 
-            // TODO MIS
-
-            float w = power_heuristic(pdf_light, pdf_brdf);       // or balance
-            sum_light += w * fr * cos_s * L.emission / pdf_light; // w *
+            float w = power_heuristic(pdf_light_new, pdf_brdf);         // or balance
+            sum_light += (w * fr * cos_s * L.emission / pdf_light_new); // w*
         }
-
         if (light_samples > 1)
-            sum_light /= float(light_samples * light_samples);
+            sum_light /= float(light_samples);
     }
 
     // RR 1
-    float rr_weight;
-    if (depth > MIN_DEPTH)
+    float rr_weight = 1.0f;
+    /* if (depth > MIN_DEPTH)
     {
         if (rand_float() > p_survive)
             return color(0, 0, 0);
@@ -862,7 +965,7 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
     else
     {
         rr_weight = 1.0f;
-    }
+    } */
 
     // -------------------------
     // 3) BRDF sampling (matches NEE mixture)
@@ -870,98 +973,6 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
 
     color sum_brdf_full(0, 0, 0); // contributes to tr.full
     color sum_brdf_only(0, 0, 0); // contributes to tr.brdf_only
-
-    /* for (int i = 0; i < brdf_samples; i++) // SPECKLES
-    {
-        bool choose_spec = rand_float() < SPEC_PROB;
-
-        vec3 wo;
-        float pdf_diff = 0.0f;
-        float pdf_spec = 0.0f;
-
-        // --- Sample ONE lobe
-        if (choose_spec)
-        {
-            wo = sample_phong_lobe(refl_dir, n, s, pdf_spec); // check!
-        }
-        else
-        {
-            wo = sample_cosine_hemisphere(n);
-            float cos_n = dot(wo, n);
-            if (cos_n <= 0.0f)
-                continue;
-            pdf_diff = cos_n / M_PI;
-        }
-        float cos_theta = std::max(0.0f, dot(wo, n));
-        if (cos_theta <= 0.0f)
-            continue;
-
-        // --- Mixture PDF (MUST match NEE)
-        float pdf_brdf = SPEC_PROB * pdf_spec + DIFF_PROB * pdf_diff;
-
-        if (pdf_brdf <= 0.0f)
-            continue;
-
-        // --- FULL BRDF evaluation (same as NEE)
-        color fr = brdf_diffuse(hi.mat) + brdf_specular(hi.mat, s, refl_dir, wo);
-
-        ray new_ray(hi.p + wo * eps, wo);
-
-        hit_info nh;
-        if (!bvh_tree.hit(new_ray, eps, FLT_MAX, nh))
-            continue;
-
-        // --- MIS if we hit a light
-        if (nh.mat.is_emissive())
-        {
-            // continue;
-
-            const area_light &L = lights[0];
-
-            float dist = (nh.p - hi.p).length();
-            float cos_l = std::max(0.0f, dot(L.normal, -wo));
-            if (cos_l <= 0.0f)
-                continue;
-
-            float pdf_light =
-                (dist * dist / cos_l) / L.area;
-
-            // float w = balance_heuristic(pdf_brdf, pdf_light);
-            float w = power_heuristic(pdf_brdf, pdf_light);
-
-            sum_brdf_full +=
-                w *
-                nh.mat.emission *
-                fr *
-                cos_theta / pdf_brdf;
-        }
-        else
-        {
-            // continue;
-
-            color child = newest_rec_trace(new_ray, bvh_tree, depth - 1, lights);
-
-            color contrib = fr * cos_theta / pdf_brdf;
-
-            sum_brdf_full += child * contrib;
-
-            if (!std::isfinite(sum_brdf_full.x()) || !std::isfinite(sum_brdf_full.y()) || !std::isfinite(sum_brdf_full.z()))
-            {
-                std::cout << "NaN/inf term at depth " << depth << " child " << child << " contrib " << contrib << std::endl;
-                sum_brdf_full = color(0, 0, 0);
-            }
-
-            // DEBUGGING
-            if (depth == 2 && hi.mat.flag > 0 && sum_brdf_full.length() > lights[0].emission.length())
-                std::cout << "brdf " << fr << " choosespec " << choose_spec << " sum_brdf_full " << sum_brdf_full.length() << " contrib " << contrib.length() << " child " << child.length() << " light " << lights[0].emission.length() << " hit flag " << hi.mat.flag << " specprob " << hi.mat.specular_prob << " diffuse " << hi.mat.diffuse << " specular " << hi.mat.specular << " next hit specprob " << nh.mat.specular_prob << " fr " << fr << " cos " << cos_theta << " pdf " << pdf_brdf << std::endl;
-
-            // full contribution (may include emission later)
-            // sum_brdf_full += child.full * contrib;
-
-            // BRDF-only contribution (never includes emission)
-            // sum_brdf_only += child.brdf_only * contrib;
-        }
-    } */
 
     for (int i = 0; i < brdf_samples; i++)
     {
@@ -1007,20 +1018,35 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
         if (pdf_brdf <= 0.0f)
             continue;
 
-        color fr = brdf_diffuse(hi.mat) + brdf_specular(hi.mat, s, refl_dir, wo);
+        // color fr = brdf_diffuse(hi.mat) + brdf_specular(hi.mat, s, refl_dir, wo);
+        color fr = tex_diffuse_new(hi, tex_manager) + brdf_specular(hi.mat, s, refl_dir, wo); //  tex_diffuse_new(hi, tex_manager) +
 
-        ray new_ray(hi.p + wo * eps, wo);
+        ray new_ray(hi.p + wo * eps, wo); // wo
         hit_info nh;
         if (!bvh_tree.hit(new_ray, eps, FLT_MAX, nh))
+        {
+            if (depth == 0)
+                misses++;
             continue;
+        }
+
+        // DIAGNOSTIC: Inside your BRDF loop, right after if (bvh_tree.hit(new_ray, eps, FLT_MAX, nh))
+        /* float dist = (nh.p - hi.p).length();
+
+        // Map distance to a visible gradient (e.g., bright white when close, dark when far)
+        float visual_dist = std::clamp(1.0f - (dist / 10.0f), 0.0f, 1.0f);
+
+        return color(visual_dist, visual_dist, visual_dist); */
 
         if (nh.mat.is_emissive())
         {
+            if (depth == 0)
+                indirectHits++;
             // continue; // trivial MIS
 
             // existing direct-light MIS part (keep as is, but using pdf_brdf)
-            const area_light &L = lights[0];
-            // const area_light &L = lights[nh.mat.light_id];
+            // const area_light &L = lights[0];
+            const area_light &L = lights[nh.mat.light_id];
 
             float dist = (nh.p - hi.p).length();
             float cos_l = std::max(0.0f, dot(L.normal, -wo));
@@ -1028,15 +1054,30 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
                 continue;
 
             float pdf_light = (dist * dist / cos_l) / L.area;
-            float w = power_heuristic(pdf_brdf, pdf_light);
+            float pdf_light_new = pdf_light * local_probs[nh.mat.light_id] / static_cast<float>(light_samples); // importance
+            // float pdf_light_new = pdf_light * (1.0f / lights.size()); // random
+
+            float w = power_heuristic(pdf_brdf, pdf_light_new);
 
             sum_brdf_full += w * nh.mat.emission * fr * cos_theta / pdf_brdf; // w *
         }
         else
         {
-            color child = newest_rec_trace(new_ray, bvh_tree, depth + 1, lights);
+            color child = newest_rec_trace(new_ray, bvh_tree, depth + 1, lights, tex_manager);
             color contrib = fr * cos_theta / pdf_brdf;
             sum_brdf_full += rr_weight * child * contrib; // RR 2 rr_weight *
+
+            if (depth == 0)
+            {
+                if (child.length() <= 0)
+                {
+                    timedOut++; // This path used up all its bounces and found nothing
+                }
+                else
+                {
+                    indirectHits++; // This path successfully hit a light eventually
+                }
+            }
         }
 
         // TODO MIS for mixed material
@@ -1145,7 +1186,8 @@ color camera::newest_rec_trace_RR(const ray &r, const bvh &bvh_tree, int depth, 
     color sum_light(0, 0, 0);
     if (!lights.empty())
     {
-        const area_light &L = sample_multiple_AL(lights);
+        const area_light &L = lights[0];
+        // const area_light &L = sample_multiple_AL(lights);
 
         const float area = std::max(L.area, 1e-8f);
         auto pts = stratified_sample_light(L, light_samples);
@@ -1290,6 +1332,243 @@ color camera::newest_rec_trace_RR(const ray &r, const bvh &bvh_tree, int depth, 
     return throughput * sum_light + sum_brdf;
 }
 
+color camera::guided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, VoxelGrid &grid, bool use_path_guiding)
+{
+    const float eps = 1e-6f;
+    if (depth >= MAX_DEPTH)
+    {
+        if (depth == 0)
+            timedOut++;
+        return color(0, 0, 0);
+    }
+
+    hit_info hi;
+    if (!bvh_tree.hit(r, eps, FLT_MAX, hi))
+    {
+        if (depth == 0)
+            misses++;
+        return color(0.3, 0.7, 1);
+    }
+
+    if (hi.mat.is_emissive())
+    {
+        if (depth == 0)
+            directHits++;
+        return hi.mat.emission;
+    }
+
+    vec3 N = unit_vector(hi.normal);
+    vec3 dir_in = unit_vector(r.direction());
+
+    bool front_face = dot(dir_in, N) < 0.0f;
+    vec3 n = front_face ? N : -N;
+
+    vec3 wi = -dir_in;
+    vec3 refl_dir = reflect(dir_in, n);
+
+    float s = phong_exponent_from_smoothness(hi.mat.smoothness);
+
+    // === PERFECT GLASS / DIELECTRIC ===
+    if (hi.mat.transparency > 1e-6f)
+    {
+        float n1 = front_face ? 1.0f : hi.mat.ior;
+        float n2 = front_face ? hi.mat.ior : 1.0f;
+        float eta_ratio = n1 / n2;
+        float cos_theta = dot(-dir_in, n);
+        if (cos_theta <= 0.0f)
+            return color(0, 0, 0);
+        cos_theta = std::min(cos_theta, 1.0f);
+
+        float R = fresnel_schlick(cos_theta, n1, n2);
+
+        vec3 refr_dir, refl_dir;
+        refl_dir = reflect(dir_in, n);
+
+        bool can_refract = refract(dir_in, n, eta_ratio, refr_dir);
+
+        ray refl_ray(hi.p + refl_dir * eps, refl_dir);
+        color col_refl = guided_rec_trace(refl_ray, bvh_tree, depth + 1, lights, grid, false);
+
+        if (!can_refract)
+            return col_refl;
+
+        ray refr_ray(hi.p + refr_dir * eps, refr_dir);
+        color col_refr = guided_rec_trace(refr_ray, bvh_tree, depth + 1, lights, grid, false);
+
+        return R * col_refl + (1.0f - R) * col_refr;
+    }
+
+    // === PERFECT MIRROR ===
+    if (hi.mat.is_delta_specular)
+    {
+        color fr = hi.mat.specular;
+        ray new_ray(hi.p + refl_dir * eps, refl_dir);
+        return guided_rec_trace(new_ray, bvh_tree, depth + 1, lights, grid, false) * fr;
+    }
+
+    int light_samples = 1;
+    int brdf_samples = 1;
+
+    float SPEC_PROB = hi.mat.specular_prob;
+    float DIFF_PROB = 1.0f - SPEC_PROB;
+
+    // -------------------------
+    // 2) NEE: direct lighting
+    // -------------------------
+    color sum_light(0, 0, 0);
+    if (!lights.empty())
+    {
+        const area_light &L = lights[0];
+        // const area_light &L = sample_multiple_AL(lights);
+
+        const float area = std::max(L.area, 1e-8f);
+        auto pts = stratified_sample_light(L, light_samples);
+
+        for (const point3 &lp : pts)
+        {
+            vec3 Lvec = lp - hi.p;
+            float dist = Lvec.length();
+            vec3 wo = Lvec / dist;
+
+            float cos_s = dot(n, wo);
+            float cos_l = dot(L.normal, -wo);
+
+            if (cos_s <= 0 || cos_l <= 0)
+                continue;
+
+            cos_s = std::min(cos_s, 1.0f);
+            cos_l = std::min(cos_l, 1.0f);
+
+            if (!visible(hi.p + wo * eps, lp, bvh_tree))
+            {
+                continue;
+            }
+
+            float pdf_light = (dist * dist / cos_l) / area;
+            color fr = tex_diffuse(hi);
+
+            float phong_pdf = (s + 2.0f) * std::pow(std::max(dot(refl_dir, wo), 0.0f), s) / (2.0f * M_PI);
+            float pdf_brdf = SPEC_PROB * phong_pdf + DIFF_PROB * (cos_s / M_PI);
+
+            float w = power_heuristic(pdf_light, pdf_brdf);
+            sum_light += w * fr * cos_s * L.emission / pdf_light;
+        }
+
+        if (light_samples > 1)
+            sum_light /= float(light_samples * light_samples);
+    }
+
+    // -------------------------
+    // 3) BRDF / Guiding sampling
+    // -------------------------
+    color brdf_sum(0, 0, 0);
+
+    for (int i = 0; i < brdf_samples; i++)
+    {
+        vec3 wo;
+        float pdf_brdf = 0.0f;
+
+        if (use_path_guiding)
+        {
+            float alpha = 0.7f;
+            float pdf_guided = 0.0f;
+            float pdf_diff = 0.0f;
+
+            if (rand_float() < alpha)
+            {
+                wo = grid.sample_guided_direction(hi.p, n, pdf_guided);
+            }
+            else
+            {
+                wo = sample_cosine_hemisphere(n);
+                pdf_guided = grid.get_guided_pdf_interpolated(hi.p, n, wo);
+            }
+            float cos_theta = std::max(0.0f, dot(n, wo));
+            pdf_diff = cos_theta / M_PI;
+            pdf_brdf = alpha * pdf_guided + (1.0f - alpha) * pdf_diff;
+        }
+        else
+        {
+            wo = sample_cosine_hemisphere(n);
+            float cos_theta = std::max(0.0f, dot(n, wo));
+            pdf_brdf = cos_theta / M_PI;
+        }
+
+        if (pdf_brdf <= 0.0f)
+            continue;
+
+        float cos_theta = std::max(0.0f, dot(wo, n));
+        if (cos_theta <= 0.0f)
+            continue;
+
+        color fr = tex_diffuse(hi);
+
+        ray new_ray(hi.p + wo * eps, wo);
+        hit_info nh;
+        if (!bvh_tree.hit(new_ray, eps, FLT_MAX, nh))
+        {
+            if (depth == 0)
+                misses++;
+            continue;
+        }
+
+        if (nh.mat.is_emissive())
+        {
+            if (depth == 0)
+                indirectHits++;
+
+            const area_light &L = lights[0];
+
+            float dist = (nh.p - hi.p).length();
+            float cos_l = std::max(0.0f, dot(L.normal, -wo));
+            if (cos_l <= 0.0f)
+                continue;
+
+            float pdf_light = (dist * dist / cos_l) / L.area;
+            float w = power_heuristic(pdf_brdf, pdf_light);
+
+            brdf_sum += nh.mat.emission * fr * cos_theta / pdf_brdf;
+        }
+        else
+        {
+            color child = guided_rec_trace(new_ray, bvh_tree, depth + 1, lights, grid, use_path_guiding);
+            color contrib = fr * cos_theta / pdf_brdf;
+            brdf_sum += child * contrib;
+
+            if (depth == 0)
+            {
+                if (child.length() <= 0)
+                {
+                    timedOut++; // This path used up all its bounces and found nothing
+                }
+                else
+                {
+                    indirectHits++; // This path successfully hit a light eventually
+                }
+            }
+        }
+
+        // --- FIXED RECORD RADIANCE STEP (FIX 2) ---
+        // Save direct lighting (sum_light) + indirect lighting (brdf_sum)
+        color total_incoming_light = sum_light + brdf_sum;
+        if (total_incoming_light.length() > 0.0f)
+        {
+            grid.record_radiance(hi.p, wo, total_incoming_light);
+
+            if (test_point.length() == 0)
+            {
+                test_point = hi.p;
+                std::cout << "Locked test point: " << hi.p << std::endl;
+            }
+        }
+    }
+
+    if (brdf_samples > 1)
+        brdf_sum /= float(brdf_samples);
+
+    return (sum_light + brdf_sum);
+}
+
 // Split ray-color
 color camera::divided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
 {
@@ -1309,39 +1588,44 @@ color camera::divided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, st
         return Le;
     }
 
+    // small offset
     const float eps = 1e-4f;
 
-    // geometric & shading normals
+    // vectors
     vec3 N = unit_vector(hi.normal);
-    vec3 r_dir_inv = unit_vector(r.direction()) * -1.0f;
+    vec3 dir_in = unit_vector(r.direction());
+    vec3 wi = -dir_in;
+    bool front_face = dot(dir_in, N) < 0.0f;
+    vec3 n = front_face ? N : -N;
 
-    if (hi.mat.flag == 3) // mirror
+    /* if (hi.mat.flag == 3) // mirror
     {
         return recursion_mirror(r_dir_inv, N, hi, bvh_tree, depth, lights);
     }
-    /* if (hi.mat.flag == 4) // transparent
+    if (hi.mat.flag == 4) // transparent
     {
         return recursion_transparent(dir_in, N, hi, bvh_tree, depth, lights);
     } */
 
-    return Le + next_event_estimation(r_dir_inv, N, hi, bvh_tree, depth - 1, lights) + indirect_illumination(r_dir_inv, N, hi, bvh_tree, depth - 1, lights);
+    return Le + next_event_estimation(wi, n, hi, bvh_tree, depth - 1, lights) + indirect_illumination(wi, n, hi, bvh_tree, depth - 1, lights);
 }
 
-color camera::next_event_estimation(const vec3 &wo, const vec3 &N, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
+color camera::next_event_estimation(const vec3 &wi, const vec3 &N, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
 {
     color L(0, 0, 0);
 
-    const float light_area = std::max(lights[0].area, 1e-8f);
-    const vec3 sample_pos = sample_area_light(lights[0]);
+    // sample area light
+    float light_area = std::max(lights[0].area, 1e-8f);
+    vec3 sample_pos = sample_area_light(lights[0]);
+    const vec3 n_light = unit_vector(lights[0].normal);
 
-    const vec3 n_light = unit_vector(lights[0].normal); // sample point
+    // vector to light point
+    vec3 Lvec = (sample_pos - hit.p);
+    float dist = Lvec.length();
+    vec3 wo = Lvec / dist;
 
-    vec3 wi = (sample_pos - hit.p);
-    const float dist = wi.length();
-    wi = unit_vector(wi);
-
-    const float cos_on_s = std::min(1.0f, dot(N, wi));               // cos between face normal and ray from light source
-    const float cos_on_l = std::min(1.0f, dot(n_light, wi * -1.0f)); // cos between light normal and ray from light source
+    float cos_on_s = std::min(1.0f, dot(N, wo));               // cos between face normal and ray from light source
+    float cos_on_l = std::min(1.0f, dot(n_light, wo * -1.0f)); // cos between light normal and ray from light source
 
     if (cos_on_s <= 0 || cos_on_l <= 0)
         return L;
@@ -1349,44 +1633,39 @@ color camera::next_event_estimation(const vec3 &wo, const vec3 &N, const hit_inf
     // ray r_from_light(sampled_point + 1e-04f * n_light, wi);
 
     // shadow test
-    if (!visible(hit.p + wi * 1e-04f, sample_pos, bvh_tree)) // check!
+    if (!visible(hit.p + wo * 1e-04f, sample_pos, bvh_tree)) // check!
         return L;
 
-    /* const float G = (dist * dist / cos_on_l) / light_area;
-    float pdf_light_solid = 1.0 / light_area;
-    pdf_light_solid *= G; */
-    float pdf_light_solid = (dist * dist) / (cos_on_l * light_area);
+    float pdf_light = (dist * dist) / (cos_on_l * light_area);
 
     float pdf_bsdf = 0.0f;
     bool is_delta = false;
 
-    const color fr = eval_bsdf(hit.mat, hit.p, N, wi, wo, pdf_bsdf, is_delta);
+    color fr = eval_bsdf(hit.mat, hit.p, N, wi, wo, pdf_bsdf, is_delta);
 
     if (pdf_bsdf <= 0.0f)
         return L;
 
-    const float mis_weight = (pdf_light_solid) / (pdf_bsdf + (pdf_light_solid));
-    return fr * mis_weight * (1.0f / pdf_light_solid) * cos_on_s * lights[0].emission;
+    float mis_weight = (pdf_light) / (pdf_bsdf + (pdf_light));
+    return fr * mis_weight * cos_on_s * lights[0].emission / pdf_light;
 }
 
-color camera::indirect_illumination(const vec3 &wo, const vec3 &N, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
+color camera::indirect_illumination(const vec3 &wi, const vec3 &N, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
 {
     bool is_delta = false;
     float pdf_bsdf = 0.0f;
 
-    const vec3 wi = sample_from_bsdf(N, wo, hit.mat);
+    vec3 wo = sample_from_bsdf(wi, N, hit.mat);
 
-    float cos_wi = dot(wi, N);
+    float cos_wo = std::max(0.0f, dot(wo, N));
 
-    cos_wi = std::max(0.0f, cos_wi);
-
-    const color fr = eval_bsdf(hit.mat, hit.p, N, wi, wo, pdf_bsdf, is_delta);
+    color fr = eval_bsdf(hit.mat, hit.p, N, wi, wo, pdf_bsdf, is_delta);
 
     if (pdf_bsdf <= 0.0f)
         return color(0, 0, 0);
 
-    const vec3 sample_origin = hit.p + 1e-04f * N; // or wi?
-    const ray sample_ray(sample_origin, wi);
+    vec3 sample_origin = hit.p + 1e-04f * wo;
+    ray sample_ray(sample_origin, wo);
 
     hit_info next_hit;
     bool bang = bvh_tree.hit(sample_ray, 1e-04f, FLT_MAX, next_hit);
@@ -1394,30 +1673,29 @@ color camera::indirect_illumination(const vec3 &wo, const vec3 &N, const hit_inf
     if (!next_hit.mat.is_emissive())
     {
         color Li = divided_rec_trace(sample_ray, bvh_tree, depth - 1, lights);
-        return Li * (fr * cos_wi / pdf_bsdf);
+        return Li * (fr * cos_wo / pdf_bsdf);
     }
 
     else
     {
         color Li = lights[0].emission;
-        const float area = lights[0].area;
-        const float pdf_light_A = 1.0f / area;
+        float area = lights[0].area;
+        float pdf_light = 1.0f / area;
 
-        const vec3 light_pos = next_hit.p;
-        const vec3 n_light = lights[0].normal; // sample point
+        vec3 light_pos = next_hit.p;
+        vec3 n_light = lights[0].normal; // sample point
 
-        const float distance2 = (light_pos - sample_origin).length_squared(); // ^2?
+        float distance2 = (light_pos - sample_origin).length_squared(); // ^2?
 
-        float cos_light = std::max(0.0f, dot(n_light, wi * -1.0f));
+        float cos_light = std::max(0.0f, dot(n_light, wo * -1.0f));
         if (cos_light <= 0.0f)
             return color(0, 0, 0);
 
-        const float pdf_light_ω = pdf_light_A * distance2 / cos_light;
-        const float pdf_bsdf_ω = pdf_bsdf;
+        pdf_light = pdf_light * distance2 / cos_light;
 
-        const float w_bsdf = pdf_bsdf_ω / (pdf_bsdf_ω + pdf_light_ω);
+        float mis_weight = pdf_bsdf / (pdf_bsdf + pdf_light);
 
-        return Li * fr * cos_wi * w_bsdf / pdf_bsdf_ω;
+        return Li * fr * cos_wo * mis_weight / pdf_bsdf;
     }
 }
 
@@ -1475,40 +1753,52 @@ color camera::eval_bsdf(const material &m, const vec3 &p, const vec3 &n, const v
         break;
 
     default:
-        shading = color(1, 1, 1);
+        /* shading = color(1, 1, 1);
         pdf_factor = 0.0f;
         is_delta = false;
+        break; */
+
+        // TODO
+        vec3 refl_dir = reflect(wi * -1.0f, n);
+        float s = m.spec_exponent;
+        float SPEC_PROB = m.specular_prob;
+        float DIFF_PROB = 1 - SPEC_PROB;
+        color fr = brdf_diffuse(m) + brdf_specular(m, s, refl_dir, wo);
+        float phong_pdf = (s + 2.0f) * std::pow(std::max(dot(refl_dir, wo), 0.0f), s) / (2.0f * M_PI);
+        pdf_factor = SPEC_PROB * phong_pdf + DIFF_PROB * (dot(n, wo) / M_PI);
+
+        shading = fr;
         break;
     }
 
     return shading;
 }
 
-vec3 camera::sample_from_bsdf(vec3 N, vec3 w0, material m)
+vec3 camera::sample_from_bsdf(vec3 wi, vec3 N, material m)
 {
-    vec3 wi;
+    vec3 wo;
     // return sample_cosine_hemisphere(N);
     switch (m.flag)
     {
     case 1:
     {
-        wi = sample_cosine_hemisphere(N);
+        wo = sample_cosine_hemisphere(N);
     }
     break;
     case 2:
     {
         float k = rand_float();
         if (k < 0.5)
-            wi = phong_specular(N, w0, m.spec_exponent);
+            wo = phong_specular(N, wi, m.spec_exponent);
         else
-            wi = sample_cosine_hemisphere(N);
+            wo = sample_cosine_hemisphere(N);
     }
     break;
     default:
-        wi = sample_uniform_hemisphere(N);
+        wo = sample_uniform_hemisphere(N);
         break;
     }
-    return wi;
+    return wo;
 }
 
 color camera::recursion_mirror(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
@@ -1563,16 +1853,15 @@ color camera::recursion_transparent(vec3 I, vec3 N, hit_info hit, const bvh &bvh
 }
 
 // Rendering
-void camera::render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree)
+void camera::render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, VoxelGrid &guiding_grid, TextureManager &tex_manager)
 {
     initialize();
     std::vector<color> framebuffer(image_width * image_height);
 
-    std::vector<color> brdf_result(image_width * image_height);
-
-    ErrorAnalyzer analyzer(image_width, image_height);
+    // ErrorAnalyzer analyzer(image_width, image_height);
     int spp = 1;
     int N = int(std::sqrt(spp));
+    bool guiding = false;
 
 #pragma omp parallel for schedule(dynamic) // TODO threads
     for (int j = 0; j < image_height; j++)
@@ -1580,8 +1869,6 @@ void camera::render(const std::vector<object> &world, std::vector<area_light> &l
         for (int i = 0; i < image_width; i++)
         {
             color pixel_color(0, 0, 0);
-            color brdf_color(0, 0, 0);
-            // TraceResult sample;
 
             /* for (int py = 0; py < N; py++)
             {
@@ -1600,43 +1887,36 @@ void camera::render(const std::vector<object> &world, std::vector<area_light> &l
             {
                 for (int px = 0; px < N; px++)
                 {
-
                     float u = i + (px + rand_double()) / N; // stratified jittered pixel sampling
                     float v = j + (py + rand_double()) / N;
 
                     point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
 
                     ray r(camera_center, pixel_center - camera_center);
-                    color sample = nee_rec_trace(r, bvh_tree, 5, lights); // ,lights
-                    // color sample = newest_rec_trace(r, bvh_tree, 0, lights); // define recusion depth!, lights, throughput: color(1, 1, 1)
+                    // color sample = nee_rec_trace(r, bvh_tree, 5, lights); // ,lights
+                    color sample = newest_rec_trace(r, bvh_tree, 0, lights, tex_manager); // define recusion depth!, lights, throughput: color(1, 1, 1)
+                    // color sample = guided_rec_trace(r, bvh_tree, 0, lights, guiding_grid, guiding);
+
+                    // color sample = divided_rec_trace(r, bvh_tree, 3, lights); TODO
                     pixel_color += sample;
 
-                    // pixel_color += sample.full;
-                    // brdf_color += sample.brdf_only;
+                    // contribution analysis
+                    /* if (sample.length() > 0)
+                    {
+                        contributions++;
+                    }
+                    else
+                    {
+                        no_contribution++;
+                    } */
 
-// Error
-#pragma omp critical
-                    analyzer.add_pixel_sample(i, j, sample);
+                    // Error
+                    // #pragma omp critical
+                    // analyzer.add_pixel_sample(i, j, sample);
                 }
             }
             pixel_color /= float(N * N);
             framebuffer[j * image_width + i] = pixel_color;
-
-            /* brdf_color /= float(N * N);
-            brdf_result[j * image_width + i] = brdf_color;
-            float lum = luminance(pixel_color);
-            float LN = 0.0f;
-            if (i > 0 && j > 0 && i < (image_width - 1) && j < (image_height - 1))
-            {
-                LN += (luminance(framebuffer[j * image_width + (i - 1)]) + luminance(framebuffer[j * image_width + (i + 1)]) + luminance(framebuffer[(j - 1) * image_width + i]) + luminance(framebuffer[(j + 1) * image_width + i]) + luminance(framebuffer[(j - 1) * image_width + (i - 1)]) + luminance(framebuffer[(j - 1) * image_width + (i + 1)]) + luminance(framebuffer[(j + 1) * image_width + (i - 1)]) + luminance(framebuffer[(j + 1) * image_width + (i + 1)])) / 8;
-                if (lum > 10 * LN) // threshold, tweakable
-                {
-                    std::cout << "YEA" << std::endl;
-                    // mark firefly
-                    sample.brdf_only = color(50, 40, 0);
-                }
-            }
-            brdf_result[j * image_width + i] = sample.brdf_only; */
         }
 
         // progress
@@ -1646,24 +1926,6 @@ void camera::render(const std::vector<object> &world, std::vector<area_light> &l
             std::cout << percentage << " done" << std::endl;
         }
     }
-    /* int samples_per_pixel = 5;
-    for (int j = 0; j < image_height; j++)
-    {
-        for (int i = 0; i < image_width; i++)
-        {
-            color pixel_color(0, 0, 0);
-            for (int s = 0; s < samples_per_pixel; s++)
-            {
-                auto pixel_center = pixel_top_left + (i + rand_double()) * pixel_delta_h + (j + rand_double()) * pixel_delta_v;
-                ray r(camera_center, pixel_center - camera_center);
-                pixel_color += new_rec_trace(r, bvh_tree, 3, lights); // TODO
-                // pixel_color += ray_color_area(r, world, bvh_tree, al, 3);
-                // pixel_color += ray_color(r, world, lights, bvh_tree, 3);
-            }
-            pixel_color /= double(samples_per_pixel);
-            framebuffer[j * image_width + i] = pixel_color;
-        }
-    } */
 
     std::ofstream out("image.ppm");
     out << "P3\n"
@@ -1673,15 +1935,14 @@ void camera::render(const std::vector<object> &world, std::vector<area_light> &l
     out.close();
 
     // Error
-    // ErrorAnalyzer analyzer;
-    std::vector<color> image = analyzer.load_ppm("image.ppm");
+    /* std::vector<color> image = analyzer.load_ppm("image.ppm");
     std::vector<color> groundtruth = analyzer.load_ppm("groundtruthDiffuse2500.ppm");
     float mse = analyzer.mse(image, groundtruth);
     float psnr = analyzer.psnr(image, groundtruth);
     float ssim = analyzer.ssim(image, groundtruth);
     std::cout << "MSE = " << mse << ", PSNR = " << psnr << ", SSIM = " << ssim << "\n";
     float noise = analyzer.compute_global_noise();
-    std::cout << "Image noise = " << noise << "\n";
+    std::cout << "Image noise = " << noise << "\n"; */
 }
 
 void camera::old_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree) // TODO area_light light_source
@@ -1732,40 +1993,105 @@ void camera::old_render(const std::vector<object> &world, std::vector<area_light
     out.close(); // close file
 }
 
-// Firefly removal
-void camera::remove_fireflies(std::vector<color> &image, int width, int height, float threshold)
+void camera::new_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, VoxelGrid &guiding_grid)
 {
-    auto luminance = [](const color &c)
-    { return 0.2126f * c.x() + 0.7152f * c.y() + 0.0722f * c.z(); };
-    std::vector<color> filtered = image;
+    initialize();
 
-    for (int y = 1; y < height - 1; y++)
+    // =========================================================================
+    // MULTI-PASS PROGRESSIVE TRAINING LOOP
+    // =========================================================================
+    int num_training_iterations = 5; // sequential learning updates
+    int samples_per_iteration = 4;   // Small sample size per loop iteration
+    int N_train = static_cast<int>(std::sqrt(samples_per_iteration));
+
+    for (int iter = 0; iter < num_training_iterations; iter++)
     {
-        for (int x = 1; x < width - 1; x++)
+        std::cout << "--> Starting Training Iteration " << (iter + 1)
+                  << "/" << num_training_iterations << "..." << std::endl;
+
+        // Reset our global debug marker for each pass
+        test_point = point3(0, 0, 0);
+
+        for (int j = 0; j < image_height; j++)
         {
-            int idx = y * width + x;
-            float lum = luminance(image[idx]);
-            color sum(0, 0, 0);
-            float lum_sum = 0.0f;
-            int count = 0;
-
-            for (int dy = -1; dy <= 1; dy++)
-                for (int dx = -1; dx <= 1; dx++)
+            for (int i = 0; i < image_width; i++)
+            {
+                for (int py = 0; py < N_train; py++)
                 {
-                    if (dx == 0 && dy == 0)
-                        continue;
-                    int nidx = (y + dy) * width + (x + dx);
-                    sum += image[nidx];
-                    lum_sum += luminance(image[nidx]);
-                    count++;
-                }
+                    for (int px = 0; px < N_train; px++)
+                    {
+                        float u = i + (px + rand_double()) / N_train;
+                        float v = j + (py + rand_double()) / N_train;
 
-            color avg_color = sum / float(count);
-            float avg_lum = lum_sum / count;
-            if (lum > avg_lum * threshold)
-                filtered[idx] = avg_color;
+                        point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
+                        ray r(camera_center, pixel_center - camera_center);
+
+                        // CRITICAL:
+                        // Iteration 0 has no prior knowledge -> use_path_guiding = false (blind exploration)
+                        // Iterations 1, 2, 3 -> use_path_guiding = true!
+                        // It uses the prior iteration's guide to discover even deeper light paths.
+                        bool guiding_enabled = (iter > 0);
+
+                        guided_rec_trace(r, bvh_tree, 0, lights, guiding_grid, guiding_enabled);
+                    }
+                }
+            }
+        }
+
+        // Bake and freeze the data collected in this iteration.
+        // This copies current 'spherical_bins' to 'guiding_pdf' and zeroes out 'spherical_bins'.
+        std::cout << "    Baking distributions for iteration " << (iter + 1) << "..." << std::endl;
+        guiding_grid.finalize_and_build_distributions();
+
+        // Export a progressive diagnostic heatmap frame to see it converge!
+        if (test_point.length() > 0.0f)
+        {
+            std::string heatmap_name = "voxel_heatmap_iter_" + std::to_string(iter + 1) + ".ppm";
+            guiding_grid.export_voxel_heatmap_ppm2(test_point, heatmap_name);
+        }
+
+        std::cout << "guiding pdf (testpoint (0,0)): " << guiding_grid.get_voxel(test_point).guiding_pdf[0][0] << std::endl;
+        std::cout << "direct: " << directHits << "indirect: " << indirectHits << "misses: " << misses << "timeout: " << timedOut << std::endl;
+    }
+
+    // =========================================================================
+    // PASS 2: FINAL PRODUCTION PASS (Use the beautifully refined guides)
+    // =========================================================================
+    int production_spp = 16;
+    int N_prod = static_cast<int>(std::sqrt(production_spp));
+    std::vector<color> framebuffer(image_width * image_height);
+    std::cout << "--> Starting Production Pass with Fully Trained Guides (" << production_spp << " SPP)..." << std::endl;
+
+    // #pragma omp parallel for schedule(dynamic)
+    for (int j = 0; j < image_height; j++)
+    {
+        for (int i = 0; i < image_width; i++)
+        {
+            color pixel_color(0, 0, 0);
+
+            for (int py = 0; py < N_prod; py++)
+            {
+                for (int px = 0; px < N_prod; px++)
+                {
+                    float u = i + (px + rand_double()) / N_prod;
+                    float v = j + (py + rand_double()) / N_prod;
+
+                    point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
+                    ray r(camera_center, pixel_center - camera_center);
+
+                    pixel_color += guided_rec_trace(r, bvh_tree, 0, lights, guiding_grid, true);
+                }
+            }
+
+            framebuffer[j * image_width + i] = pixel_color / static_cast<float>(production_spp);
         }
     }
 
-    image.swap(filtered);
+    std::cout << "--> Rendering complete!" << std::endl;
+    std::ofstream out("image.ppm");
+    out << "P3\n"
+        << image_width << ' ' << image_height << "\n255\n";
+    for (const auto &c : framebuffer)
+        write_color(out, c);
+    out.close();
 }

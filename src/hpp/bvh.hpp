@@ -3,12 +3,8 @@
 
 #include "aabb.hpp"
 #include "triangle.hpp"
-#include "hittable.hpp"
-
-#include <vector>
-#include <memory>
-#include <limits>
 #include <iostream>
+#include <memory>
 
 struct bvh_node
 {

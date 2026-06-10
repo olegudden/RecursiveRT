@@ -14,6 +14,7 @@ struct hit_info
     material mat;
     material_type mt;
     bool front_face;
+    float u, v;
 };
 
 class hittable

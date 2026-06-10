@@ -2,8 +2,8 @@
 #define COLOR_HPP
 
 #include "vec3.hpp"
-#include <iostream>
 #include <algorithm>
+#include <ostream>
 
 using color = vec3;
 
@@ -16,7 +16,8 @@ color aces_tonemap(const color &c);
 vec3 gamma_correct(const vec3 &c, float gamma = 2.2f);
 void std_write_color(std::ostream &out, const color &pixel_color);
 void write_color(std::ostream &out, const color &pixel_color);
-
 float luminance(const vec3 &c);
+
+color sample_texture(unsigned char *data, int width, int height, float u, float v);
 
 #endif // COLOR_HPP

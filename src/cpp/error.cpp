@@ -1,6 +1,4 @@
 #include "../hpp/error.hpp"
-#include <fstream>
-#include <cmath>
 
 ErrorAnalyzer::ErrorAnalyzer(int w, int h)
     : width(w), height(h), stats(w * h) {}

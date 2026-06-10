@@ -1,19 +1,14 @@
 #ifndef CAMERA_HPP
 #define CAMERA_HPP
 
-#include "hittable.hpp"
-#include "color.hpp"
-#include "triangle.hpp"
 #include "light_source.hpp"
-#include "mesh_loader.hpp"
-#include "material.hpp"
-#include "bvh.hpp"
-// #include "object.h"
-#include "ray.hpp"
+#include "path_guiding.hpp"
+#include "texture.hpp"
+#include "color.hpp"
 
 #include <vector>
 #include <fstream>
-#include <random>
+#include <atomic>
 
 struct TraceResult
 {
@@ -25,15 +20,27 @@ class camera
 {
 
 public:
+    // texture
+    int width = 1024;
+    int height = 1024;
+    int channels = 3;
+    unsigned char *data = stbi_load("Crate_Texture.png", &width, &height, &channels, 3); // TODO multiple textures
+
     bool adjustable = false;
     double aspect_ratio = 1.0;
     int image_width = 100;
 
+    std::atomic<int> directHits{0};
+    std::atomic<int> indirectHits{0};
+    std::atomic<int> misses{0};
+    std::atomic<int> timedOut{0};
+
     camera() = default;
 
     // Render the scene
-    void render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree);
+    void render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, VoxelGrid &grid, TextureManager &tex_manager);
     void old_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree); // area_light
+    void new_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, VoxelGrid &guiding_grid);
 
     // Helper function: uniform random in [0, 1) (for antialiasing)
     double rand_double();
@@ -68,8 +75,9 @@ private:
 
     color nee_rec_trace(const ray &r, const bvh &bvh_tree, int depth, const std::vector<area_light> &lights);
 
-    color newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
+    color newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, TextureManager &tex_manager);
     color newest_rec_trace_RR(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, color throughput);
+    color guided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, VoxelGrid &grid, bool use_path_guiding);
 
     color divided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
     color next_event_estimation(const vec3 &wo, const vec3 &N, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
@@ -79,12 +87,13 @@ private:
     color recursion_mirror(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
     color recursion_transparent(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
 
-    void remove_fireflies(std::vector<color> &image, int width, int height, float threshold);
-
     void build_orthonormal_basis(vec3 v, vec3 &t, vec3 &b);
     vec3 dielectric_F0_from_tint(const vec3 &spec_tint);
     vec3 sample_phong_lobe(const vec3 &r, const vec3 &n, float s, float &pdf_phong);
     color brdf_diffuse(const material &m);
+    color tex_diffuse(hit_info &hi);
+    color tex_diffuse_new(const hit_info &hi, TextureManager &tex_manager);
+
     color brdf_specular(const material &m, const float s, const vec3 &refl_dir, const vec3 &wo);
 };
 

@@ -1,5 +1,4 @@
 #include "../hpp/vec3.hpp"
-#include <algorithm>
 
 // Constructors
 vec3::vec3() : e{0, 0, 0} {}

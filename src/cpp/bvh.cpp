@@ -1,5 +1,4 @@
 #include "../hpp/bvh.hpp"
-#include <algorithm>
 
 // ----------------------- bvh_stats -----------------------
 void bvh_stats::printStats() const

@@ -1,8 +1,6 @@
 #ifndef AABB_HPP
 #define AABB_HPP
 
-#include "hittable.hpp"
-#include "vec3.hpp"
 #include "triangle.hpp"
 #include <vector>
 

@@ -1,6 +1,7 @@
-#include <vector>
-#include "vec3.hpp"
 #include "color.hpp"
+
+#include <vector>
+#include <fstream>
 
 struct PixelStats
 {

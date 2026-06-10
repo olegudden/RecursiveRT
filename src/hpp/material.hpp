@@ -2,7 +2,8 @@
 #define MATERIAL_HPP
 
 #include "color.hpp"
-#include <cmath>
+
+#include <string>
 
 enum class material_type
 {
@@ -35,7 +36,7 @@ public:
     color ambient;
     color diffuse;
     color specular;
-    float spec_exponent;
+    float spec_exponent = 16.0f;
 
     // for ray intersections
     float transparency; // 0 = opaque, 1 = fully transparent
@@ -45,9 +46,9 @@ public:
     color absorption; // colored tint of transparent object
     float ior = 1.5f; // Index of refraction
 
-    float smoothness;
-    float roughness = 1 - smoothness;
-    float specular_prob;
+    float smoothness = 0.0f;
+    float roughness = 1.0f - smoothness;
+    float specular_prob = 0.0f;
     bool is_delta_specular = false; // NEW
 
     int flag;
@@ -55,6 +56,11 @@ public:
     // for (area) lights
     color emission = color(0, 0, 0);
     int light_id;
+
+    // for textures
+    std::string diffuse_texname;
+    bool has_diffuse_tex;
+    int diffuse_tex_id = -1;
 
     bool is_emissive() const
     {
@@ -297,4 +303,5 @@ inline material mat_from_type(material_type mt, color base)
 
     return m;
 }
+
 #endif

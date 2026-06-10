@@ -1,7 +1,4 @@
 #include "../hpp/aabb.hpp"
-#include <cfloat>
-#include <cmath>
-#include <algorithm>
 
 aabb::aabb() : min_xyz(point3(0, 0, 0)), max_xyz(point3(0, 0, 0)) {}
 
@@ -15,7 +12,7 @@ aabb::aabb(std::vector<triangle> mesh)
 
     for (auto &tri : mesh)
     {
-        for (const point3 &v : {tri.get_v0(), tri.get_v1(), tri.get_v2()})
+        for (const point3 &v : {tri.v0, tri.v1, tri.v2})
         {
             min_x = std::min(min_x, v.x());
             min_y = std::min(min_y, v.y());
@@ -102,7 +99,7 @@ float aabb::surface_area() const
 
 aabb aabb::from_triangle(triangle &tri)
 {
-    point3 v0 = tri.get_v0(), v1 = tri.get_v1(), v2 = tri.get_v2();
+    point3 v0 = tri.v0, v1 = tri.v1, v2 = tri.v2;
     vec3 small(fmin(fmin(v0.x(), v1.x()), v2.x()),
                fmin(fmin(v0.y(), v1.y()), v2.y()),
                fmin(fmin(v0.z(), v1.z()), v2.z()));

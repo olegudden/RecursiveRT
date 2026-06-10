@@ -1,5 +1,4 @@
 #include "../hpp/color.hpp"
-#include <cmath>
 
 color clamp_color(const color &c)
 {
@@ -62,7 +61,6 @@ void write_color(std::ostream &out, const color &pixel_color)
     color mapped = reinhard_tonemap(pixel_color);
     // color mapped = exposure_tonemap(pixel_color, 0.7f);
     // mapped = gamma_correct(mapped);
-    // mapped = clamp_color(mapped);
 
     int rbyte = static_cast<int>(255.999 * mapped.x());
     int gbyte = static_cast<int>(255.999 * mapped.y());
@@ -74,4 +72,31 @@ void write_color(std::ostream &out, const color &pixel_color)
 float luminance(const vec3 &c)
 {
     return 0.2126f * c.x() + 0.7152f * c.y() + 0.0722f * c.z();
+}
+
+color sample_texture(unsigned char *data, int width, int height, float u, float v)
+{
+    if (!data)
+        return color(1, 0, 1); // Bright pink for "Missing Texture"
+
+    // 1. Clamp or Repeat the coordinates
+    // This ensures u,v stay between 0 and 1
+    u = u - floor(u);
+    v = v - floor(v);
+
+    // 2. Map 0..1 to 0..width/height
+    int i = static_cast<int>(u * width);
+    int j = static_cast<int>((1.0f - v) * height); // Flip V: many formats are top-to-bottom
+
+    // 3. Stay within bounds
+    i = std::max(0, std::min(i, width - 1));
+    j = std::max(0, std::min(j, height - 1));
+
+    // 4. Read the RGB bytes and convert to 0..1 float color
+    int index = 3 * (j * width + i);
+    float r = data[index + 0] / 255.0f;
+    float g = data[index + 1] / 255.0f;
+    float b = data[index + 2] / 255.0f;
+
+    return color(r, g, b);
 }
