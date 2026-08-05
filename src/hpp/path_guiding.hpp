@@ -7,16 +7,38 @@
 
 struct Voxel
 {
+    float total_weight = 0.0f;
     // 8 rows (theta: 0 to pi) x 16 columns (phi: 0 to 2pi)
     // Storing accumulated incoming radiance
     float spherical_bins[8][16] = {0.0f}; // Raw workspace (Wiped every iteration)
 
-    float guiding_pdf[8][16] = {0.0f}; // Clean, normalized probabilities (Kept for guiding)
+    // Normalized guiding probabilities.
+    // Initialized to 1.0 / 128 so unvisited voxels start as a uniform distribution.
+    // TODO dominating  material pdf as prior
+    float guiding_pdf[8][16];
+    Voxel()
+    {
+        for (int t = 0; t < 8; ++t)
+        {
+            for (int p = 0; p < 16; ++p)
+            {
+                guiding_pdf[t][p] = 1.0f / (8 * 16);
+            }
+        }
+    }
 };
 
 class VoxelGrid
 {
 public:
+    point3 bounds_min,
+        bounds_max;
+    int res_x = 1, res_y = 1, res_z = 1;
+
+    // Set to true only when generating your diagnostic PLY rays
+    bool g_debug_print_rays = false;
+    bool is_training = true;
+
     VoxelGrid() = default;
 
     // Initializes the grid based on the scene's bounding box boundaries
@@ -31,8 +53,11 @@ public:
 
     float get_bin_solid_angle(int t, int p) const;
 
+    point3 get_voxel_center(int x, int y, int z) const;
+
     // Generate a guided direction based on a voxel's distribution and a surface normal
     vec3 sample_guided_direction(const point3 &hit_p, const vec3 &normal, float &out_pdf_guiding);
+    vec3 sample_guided_direction_interpolated(const point3 &hit_p, const vec3 &normal, float &out_pdf_guiding);
 
     void finalize_and_build_distributions();
 
@@ -44,9 +69,23 @@ public:
     float get_guided_pdf(const point3 &world_p, const vec3 &normal, const vec3 &dir) const;
     float get_guided_pdf_interpolated(const point3 &world_p, const vec3 &normal, const vec3 &dir) const;
 
+    void export_raw_pdf_heatmap_sphere_to_ply(const std::string &filename,
+                                              const vec3 &position,
+                                              VoxelGrid &grid);
+    void export_scene_with_heatmap_and_ray_bundle_to_ply(
+        const std::string &filename,
+        const object &scene_obj,
+        const vec3 &position,
+        const vec3 &surface_normal,
+        float sphere_radius,
+        VoxelGrid &grid,
+        int num_samples);
+
+    void export_pdf_lobe_to_obj(const std::string &filename, const vec3 &position, const vec3 &normal, VoxelGrid &grid);
+
+    void test_heatmap_directions();
+
 private:
-    point3 bounds_min, bounds_max;
-    int res_x = 0, res_y = 0, res_z = 0;
     std::vector<Voxel> voxels;
 
     // Helper functions to convert between 3D vectors and spherical bin coordinates

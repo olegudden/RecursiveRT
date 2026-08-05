@@ -39,43 +39,55 @@ int main()
     tformCornell = glm::rotate(tformCornell, glm::radians(-20.0f), glm::vec3(1.0f, 0.0f, 0.0f)); // x = -20
     // tformCornell = glm::rotate(tformCornell, glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f)); */
 
-    glm::mat4 tformCornellSphere = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.8f)); // 0,-0.5,0.8
+    glm::mat4 tformCornellSphere = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -0.25f, 1.0f)); // 0,-0.5,0.8
     tformCornellSphere = glm::rotate(tformCornellSphere, glm::radians(-20.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+
+    glm::mat4 tformSSS = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.0f, 1.6f));
+    tformSSS = glm::rotate(tformSSS, glm::radians(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    tformSSS = glm::rotate(tformSSS, glm::radians(-30.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    tformSSS = glm::scale(tformSSS, glm::vec3(0.2f, 0.2f, 0.2f));
 
     glm::mat4 tform = glm::mat4(1.0f); // identity matrix
 
-    /* glm::mat4 tformTeapot = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.85f)); // (-0.5,-0.2f,1.0f)
+    glm::mat4 tformTeapot = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.85f)); // (-0.5,-0.2f,1.0f)
     tformTeapot = glm::scale(tformTeapot, glm::vec3(0.008f, 0.008f, 0.008f));
 
-    glm::mat4 tformSuzanne = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.1f, -0.2f)); // y=0.2,z=-0.3
-    tformSuzanne = glm::scale(tformSuzanne, glm::vec3(0.1f, 0.1f, 0.1f));
+    glm::mat4 tformSuzanne = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.25f, 0.0f));
     tformSuzanne = glm::rotate(tformSuzanne, glm::radians(-25.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    tformSuzanne = glm::scale(tformSuzanne, glm::vec3(0.5f, 0.5f, 0.5f));
 
-    glm::mat4 tformDragon = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.5f, 0.25f));
-    tformDragon = glm::scale(tformDragon, glm::vec3(1.5f, 1.5f, 1.5f));
-    tformDragon = glm::rotate(tformDragon, glm::radians(65.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    tformDragon = glm::rotate(tformDragon, glm::radians(20.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    /*  glm::mat4 tformSuzanne = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.1f, -0.2f)); // y=0.2,z=-0.3
+     tformSuzanne = glm::scale(tformSuzanne, glm::vec3(0.1f, 0.1f, 0.1f));
+     tformSuzanne = glm::rotate(tformSuzanne, glm::radians(-25.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 
-    glm::mat4 tformBike = glm::translate(glm::mat4(1.0f), glm::vec3(-0.15f, -0.25f, 0.5f));
-    tformBike = glm::scale(tformBike, glm::vec3(1.0f, 1.0f, 1.0f));
-    tformBike = glm::rotate(tformBike, glm::radians(60.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+     glm::mat4 tformDragon = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.5f, 0.25f));
+     tformDragon = glm::scale(tformDragon, glm::vec3(1.5f, 1.5f, 1.5f));
+     tformDragon = glm::rotate(tformDragon, glm::radians(65.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+     tformDragon = glm::rotate(tformDragon, glm::radians(20.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
-    glm::mat4 tformTest = glm::translate(glm::mat4(1.0f), glm::vec3(0, 0.2, 0));
-    tformTest = glm::scale(tformTest, glm::vec3(3.5f, 3.5f, 3.5f));
-    // tformTest = glm::rotate(tformTest, glm::radians(0.0f), glm::vec3(0.0f, 0.0f, 0.0f));
+     glm::mat4 tformBike = glm::translate(glm::mat4(1.0f), glm::vec3(-0.15f, -0.25f, 0.5f));
+     tformBike = glm::scale(tformBike, glm::vec3(1.0f, 1.0f, 1.0f));
+     tformBike = glm::rotate(tformBike, glm::radians(60.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
-    glm::mat4 tformCrack = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.7f, 0.25f)); // 0,-0.5,0.8
+     glm::mat4 tformTest = glm::translate(glm::mat4(1.0f), glm::vec3(0, 0.2, 0));
+     tformTest = glm::scale(tformTest, glm::vec3(3.5f, 3.5f, 3.5f));
+     // tformTest = glm::rotate(tformTest, glm::radians(0.0f), glm::vec3(0.0f, 0.0f, 0.0f));
+
+     glm::mat4 tformCrack = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.7f, 0.25f)); // 0,-0.5,0.8*/
 
     glm::mat4 tformLiving = glm::translate(glm::mat4(1.0f), glm::vec3(0.5f, -0.5f, 3.0f));
     tformLiving = glm::rotate(tformLiving, glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
     glm::mat4 tformSibenik = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 10.0f, -12.0f)); // y 12, z -12
-    tformSibenik = glm::rotate(tformSibenik, glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)); */
+    tformSibenik = glm::rotate(tformSibenik, glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
     TextureManager tex_manager;
 
     // add OBJs to world
-    world.push_back(obj_to_mesh("./objects/CornellBox-Sphere.obj", "./objects/", vec3(0, 0, 0), material_preset::diffuse, material_type::diffuse, tformCornellSphere, color(0.0, 0.0, 0.0), tex_manager));
+    world.push_back(obj_to_mesh("./objects/hidden_light.obj", "./objects/", vec3(0, 0, 0), material_preset::diffuse, material_type::diffuse, tform, color(0.0, 0.0, 0.0), tex_manager));
+    // world.push_back(obj_to_mesh("./objects/CornellBox-Empty-RG.obj", "./objects/", vec3(0, 0, 0), material_preset::diffuse, material_type::diffuse, tform, color(0.0, 0.0, 0.0), tex_manager));
+    // world.push_back(obj_to_mesh("./objects/sss.obj", "./objects/", vec3(0, 0, 0), material_preset::diffuse, material_type::diffuse, tformSSS, color(0.0, 0.0, 0.0), tex_manager));
+    // world.push_back(obj_to_mesh("./objects/suzanne.obj", "./objects/", vec3(0, 0, 0), material_preset::diffuse, material_type::diffuse, tformSuzanne, color(0.0, 0.0, 0.0), tex_manager));
     // world.push_back(obj_to_mesh("./objects/suzanne.obj", "./objects/", vec3(0, 0, 0), material_preset::diffuse, material_type::diffuse, tformSuzanne, color(0.0, 0.0, 0.0), tex_manager));
     // world.push_back(obj_to_mesh("./objects/door_crack.obj", "./objects/", vec3(0, 0, 0), material_preset::diffuse, material_type::diffuse, tformLiving, color(0.0, 0.0, 0.0)));
     // world.push_back(obj_to_mesh("./objects/sibenik.obj", "./objects/", vec3(0, 0, 0), material_preset::diffuse, material_type::diffuse, tformSibenik, color(0.0, 0.0, 0.0), tex_manager));
@@ -103,17 +115,28 @@ int main()
         }
     }
 
-    // BVH (TODO: parallel building)
+    // BVH (parallel optimized building)
     bvh bvh_tree;
-    auto build_start = std::chrono::system_clock::now();             // bvh build runtime check
-    bvh_tree.root = bvh_tree.build_bvh_binned_sah(all_triangles, 0); // choose BVH contruction strategy
+    auto build_start = std::chrono::system_clock::now(); // bvh build runtime check
+
+#pragma omp parallel
+    {
+#pragma omp single
+        {
+            // One thread starts the top-level tree generation,
+            // all other active threads steal child task sub-trees!
+            bvh_tree.root = bvh_tree.build_bvh_binned_fast(all_triangles, 0, (int)all_triangles.size(), 0);
+            // bvh_tree.root = bvh_tree.build_bvh_binned_sah(all_triangles, 0);  // choose BVH contruction strategy
+        }
+    }
+
     auto build_end = std::chrono::system_clock::now();
     bvh_tree.stats.build_time_ms = std::chrono::duration<double, std::milli>(build_end - build_start).count();
     bvh_tree.stats.collect_bvh_stats(bvh_tree.root.get(), 0, bvh_tree.stats);
 
     // 1. Setup the global data structure
     VoxelGrid guiding_grid;
-    guiding_grid.initialize(world[0].box.min_point() - point3(1e-04f, 1e-04f, 1e-04f), world[0].box.max_point() + point3(1e-04f, 1e-04f, 1e-04f), 16, 16, 16);
+    guiding_grid.initialize(world[0].box.min_point() - point3(1e-04f, 1e-04f, 1e-04f), world[0].box.max_point() + point3(1e-04f, 1e-04f, 1e-04f), 7, 7, 7);
 
     // setup point light sources
     std::vector<light_source> lights;
@@ -143,7 +166,7 @@ int main()
 
     // aabb::total_tests = 0;
 
-    cam.render(world, area_lights, bvh_tree, guiding_grid, tex_manager);
+    cam.new_render(world, area_lights, bvh_tree, guiding_grid, tex_manager);
 
     // std::cout << "Total AABB tests: " << aabb::total_tests << "\n";
 
@@ -156,6 +179,9 @@ int main()
 
     std::cout << "direct: " << cam.directHits << '\n';
     std::cout << "indirect: " << cam.indirectHits << '\n';
+    std::cout << "nee only: " << cam.neeHits << '\n';
+    std::cout << "brdf > 0: " << cam.brdfHits << '\n';
+    std::cout << "guided: " << cam.guidedHits << '\n';
     std::cout << "misses: " << cam.misses << '\n';
     std::cout << "timeout: " << cam.timedOut << '\n';
 

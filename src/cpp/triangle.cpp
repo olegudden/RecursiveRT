@@ -1,5 +1,6 @@
 #include "../hpp/triangle.hpp"
 #include <iostream>
+#include <cstdint>
 
 triangle::triangle(const point3 &v0, const point3 &v1, const point3 &v2)
     : v0(v0), v1(v1), v2(v2) {}
@@ -113,6 +114,8 @@ bool triangle::hit(const ray &r, float t_min, float t_max, hit_info &hi) const
     // textures
     hi.u = w * uv0.x() + u * uv1.x() + v * uv2.x();
     hi.v = w * uv0.y() + u * uv1.y() + v * uv2.y();
+
+    hi.mesh_id = reinterpret_cast<std::uintptr_t>(this->obj_ptr);
 
     return true;
 }

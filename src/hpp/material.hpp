@@ -49,7 +49,14 @@ public:
     float smoothness = 0.0f;
     float roughness = 1.0f - smoothness;
     float specular_prob = 0.0f;
-    bool is_delta_specular = false; // NEW
+    bool is_delta_specular = false;
+
+    float metallic = 0.0f;
+    float clearcoat_roughness;
+    float clearcoat_thickness;
+    float sheen = 0.0f;
+    float subsurface_scale = 0.0f;
+    float subsurface_weight = 0.0f;
 
     int flag;
 

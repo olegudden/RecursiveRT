@@ -15,6 +15,7 @@ struct hit_info
     material_type mt;
     bool front_face;
     float u, v;
+    int mesh_id = -1;
 };
 
 class hittable

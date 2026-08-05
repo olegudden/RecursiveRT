@@ -102,6 +102,212 @@ bool bvh::hit_node(bvh_node *node, const ray &r, float t_min, float t_max, hit_i
 
 // ----------------------- BVH Builders -----------------------
 
+std::unique_ptr<bvh_node> bvh::build_bvh_binned_fast(std::vector<triangle> &global_tris, int start, int end, int depth)
+{
+    auto node = std::make_unique<bvh_node>();
+    int count = end - start;
+
+    // ----------------------------------------------------
+    // BASE CASE: Create a Leaf Node
+    // ----------------------------------------------------
+    if (count <= 10 || depth >= 20)
+    {
+        // Compute bounding box for this slice of triangles
+        aabb leaf_box = aabb::from_triangle(global_tris[start]);
+        for (int i = start + 1; i < end; ++i)
+        {
+            leaf_box = aabb::surrounding_box(leaf_box, aabb::from_triangle(global_tris[i]));
+        }
+        node->box = leaf_box;
+
+        // Copy the specific slice into the leaf's local vector storage
+        node->triangles.assign(global_tris.begin() + start, global_tris.begin() + end);
+        return node;
+    }
+
+    // ----------------------------------------------------
+    // STEP 1: Single-Pass Node and Centroid Bounds
+    // ----------------------------------------------------
+    aabb node_box = aabb::from_triangle(global_tris[start]);
+    vec3 min_c = global_tris[start].centroid();
+    vec3 max_c = global_tris[start].centroid();
+
+    for (int i = start + 1; i < end; ++i)
+    {
+        node_box = aabb::surrounding_box(node_box, aabb::from_triangle(global_tris[i]));
+        vec3 c = global_tris[i].centroid();
+        min_c = min_vec(min_c, c);
+        max_c = max_vec(max_c, c);
+    }
+    node->box = node_box;
+    vec3 extent = max_c - min_c;
+
+    // ----------------------------------------------------
+    // STEP 2: Evaluate All 3 Split Axes
+    // ----------------------------------------------------
+    int NUM_BUCKETS = 12;
+    const float C_trav = 0.125f;
+    const float C_isect = 1.0f;
+
+    int best_axis = -1;
+    int best_split = -1;
+    float best_cost = C_isect * (float)count;
+    float parent_area = node->box.surface_area();
+
+    // Loop through X, Y, Z axes sequentially (very cheap for 12 bins)
+    for (int axis = 0; axis < 3; axis++)
+    {
+        if (extent[axis] == 0.0f)
+            continue;
+
+        struct Bucket
+        {
+            int count = 0;
+            aabb bounds;
+            bool empty = true;
+        };
+        std::vector<Bucket> buckets(NUM_BUCKETS);
+
+        // Linear pass: Bin the triangles based on their centroid position
+        for (int i = start; i < end; ++i)
+        {
+            float centroid = global_tris[i].centroid()[axis];
+            int b = std::min(NUM_BUCKETS - 1, int(NUM_BUCKETS * (centroid - min_c[axis]) / extent[axis]));
+            if (b < 0)
+                b = 0; // Safety guard
+
+            aabb tri_box = aabb::from_triangle(global_tris[i]);
+            if (buckets[b].empty)
+            {
+                buckets[b].bounds = tri_box;
+                buckets[b].empty = false;
+            }
+            else
+            {
+                buckets[b].bounds = aabb::surrounding_box(buckets[b].bounds, tri_box);
+            }
+            buckets[b].count++;
+        }
+
+        // Precompute Prefix/Left Bounds Accumulation
+        std::vector<aabb> left_bounds(NUM_BUCKETS - 1);
+        std::vector<int> left_count(NUM_BUCKETS - 1);
+        aabb tracking_box;
+        int tracking_count = 0;
+
+        for (int i = 0; i < NUM_BUCKETS - 1; i++)
+        {
+            if (!buckets[i].empty)
+            {
+                tracking_box = (tracking_count == 0) ? buckets[i].bounds
+                                                     : aabb::surrounding_box(tracking_box, buckets[i].bounds);
+            }
+            tracking_count += buckets[i].count;
+            left_bounds[i] = tracking_box;
+            left_count[i] = tracking_count;
+        }
+
+        // Precompute Suffix/Right Bounds Accumulation
+        std::vector<aabb> right_bounds(NUM_BUCKETS - 1);
+        std::vector<int> right_count(NUM_BUCKETS - 1);
+        tracking_box = aabb();
+        tracking_count = 0;
+
+        for (int i = NUM_BUCKETS - 1; i > 0; i--)
+        {
+            if (!buckets[i].empty)
+            {
+                tracking_box = (tracking_count == 0) ? buckets[i].bounds
+                                                     : aabb::surrounding_box(tracking_box, buckets[i].bounds);
+            }
+            tracking_count += buckets[i].count;
+            right_bounds[i - 1] = tracking_box;
+            right_count[i - 1] = tracking_count;
+        }
+
+        // Evaluate the cost function at every split plane interface
+        for (int i = 0; i < NUM_BUCKETS - 1; i++)
+        {
+            if (left_count[i] == 0 || right_count[i] == 0)
+                continue;
+
+            float cost = C_trav +
+                         ((left_bounds[i].surface_area() / parent_area) * (float)left_count[i] * C_isect) +
+                         ((right_bounds[i].surface_area() / parent_area) * (float)right_count[i] * C_isect);
+
+            if (cost < best_cost)
+            {
+                best_cost = cost;
+                best_axis = axis;
+                best_split = i;
+            }
+        }
+    }
+
+    // ----------------------------------------------------
+    // STEP 3: Handle Non-Split Strategy Fallback
+    // ----------------------------------------------------
+    if (best_axis == -1)
+    {
+        node->triangles.assign(global_tris.begin() + start, global_tris.begin() + end);
+        return node;
+    }
+
+    // ----------------------------------------------------
+    // STEP 4: In-Place Partitioning Array Optimization
+    // ----------------------------------------------------
+    float axis_min = min_c[best_axis];
+    float axis_extent = extent[best_axis];
+
+    // std::partition rearranges the array segment *in-place* in O(N) linear time.
+    // Elements returning true are grouped on the left, false on the right.
+    auto mid_it = std::partition(global_tris.begin() + start, global_tris.begin() + end,
+                                 [=](const triangle &tri)
+                                 {
+                                     float centroid = tri.centroid()[best_axis];
+                                     int b = std::min(NUM_BUCKETS - 1, int(NUM_BUCKETS * (centroid - axis_min) / axis_extent));
+                                     if (b < 0)
+                                         b = 0;
+                                     return b <= best_split;
+                                 });
+
+    int mid = (int)(mid_it - global_tris.begin());
+
+    // Degenerate guard: if partitioning fails to divide anything, split exactly in half
+    if (mid == start || mid == end)
+    {
+        mid = start + count / 2;
+    }
+
+    // ----------------------------------------------------
+    // STEP 5: Parallel OpenMP Tree Expansion Tasks
+    // ----------------------------------------------------
+    // Only pay thread pooling costs if dealing with large, multi-thousand poly segments
+    if (count > 2500)
+    {
+#pragma omp task shared(node, global_tris)
+        {
+            node->left = build_bvh_binned_fast(global_tris, start, mid, depth + 1);
+        }
+
+#pragma omp task shared(node, global_tris)
+        {
+            node->right = build_bvh_binned_fast(global_tris, mid, end, depth + 1);
+        }
+
+// Wait here until both threads finish executing their respective child trees
+#pragma omp taskwait
+    }
+    else
+    {
+        // Low triangle count runs completely sequentially on the local stack trace
+        node->left = build_bvh_binned_fast(global_tris, start, mid, depth + 1);
+        node->right = build_bvh_binned_fast(global_tris, mid, end, depth + 1);
+    }
+
+    return node;
+}
+
 std::unique_ptr<bvh_node> bvh::build_bvh_binned_sah(std::vector<triangle> &tris, int depth)
 {
     auto node = std::make_unique<bvh_node>();
@@ -275,6 +481,7 @@ std::unique_ptr<bvh_node> bvh::build_bvh_binned_sah(std::vector<triangle> &tris,
 
     node->left = build_bvh_binned_sah(left_tris, depth + 1);
     node->right = build_bvh_binned_sah(right_tris, depth + 1);
+
     return node;
 }
 

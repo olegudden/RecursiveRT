@@ -51,6 +51,12 @@ public:
 
     bvh() = default;
 
+    std::unique_ptr<bvh_node> build_bvh_binned_fast(
+        std::vector<triangle> &global_tris,
+        int start,
+        int end,
+        int depth);
+
     std::unique_ptr<bvh_node> build_bvh_binned_sah(std::vector<triangle> &tris, int depth = 0);
     std::unique_ptr<bvh_node> build_bvh_cycle_axis_equal(std::vector<triangle> &tris, int depth = 0);
     std::unique_ptr<bvh_node> build_bvh_longest_axis_midpoint(std::vector<triangle> &tris, int depth = 0);

@@ -521,6 +521,18 @@ object obj_to_mesh(const char *objpath, const char *mtlpath,
                 mat.diffuse = color(m.diffuse[0], m.diffuse[1], m.diffuse[2]);
                 mat.specular = color(m.specular[0], m.specular[1], m.specular[2]);
                 mat.spec_exponent = m.shininess;
+                mat.roughness = m.roughness;
+                mat.metallic = m.metallic;
+                mat.clearcoat_roughness = m.clearcoat_roughness;
+                mat.clearcoat_thickness = m.clearcoat_thickness;
+                mat.sheen = m.sheen;
+                // TODO m.transmittance
+
+                if (shape.name == "monkey" || shape.name == "pyramid")
+                {
+                    mat.subsurface_weight = 0.5f;
+                    mat.subsurface_scale = 0.25f; // TODO m.unknown_parameter
+                }
 
                 if (m.emission[0] > 0.001f || m.emission[1] > 0.001f || m.emission[2] > 0.001f)
                 {
@@ -595,11 +607,11 @@ object obj_to_mesh(const char *objpath, const char *mtlpath,
                 //  ----------------------------------------------------------------
                 //  1) MIRROR / PERFECT SPECULAR DETECTION
                 //  ----------------------------------------------------------------
-                if (m.illum == 5 || (m.name == "mirror") || (m.specular[0] > 0.99f && m.shininess > 500.0f))
+                if (m.illum == 5) // || (m.name == "mirror") || (m.specular[0] > 0.99f && m.shininess > 500.0f))
                 {
                     mat.is_delta_specular = true;
                     mat.specular_prob = 1.0f; // diffuse_prob = 0
-                                              // Grab the mirror color tint (usually white: 0.95, 0.95, 0.95)
+                    // Grab the mirror color tint (usually white: 0.95, 0.95, 0.95)
                     mat.specular[0] = m.specular[0], mat.specular[1] = m.specular[1], mat.specular[2] = m.specular[2];
                     mat.roughness = 0.0f; // Perfect reflection
                 }
@@ -607,7 +619,7 @@ object obj_to_mesh(const char *objpath, const char *mtlpath,
                 // ----------------------------------------------------------------
                 // 2) GLASS / TRANSPARENT DIELECTRIC DETECTION
                 // ----------------------------------------------------------------
-                bool is_transparent = (m.illum == 7) || (m.name == "transparent") || m.transmittance[0] > 0.0f;
+                bool is_transparent = (m.illum == 7); // || (m.name == "transparent") || m.transmittance[0] > 0.0f;
                 if (is_transparent)
                 {
                     // mat.is_dielectric = true; // Mark it internally as a dielectric
