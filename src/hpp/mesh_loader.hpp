@@ -10,7 +10,7 @@ struct object
 {
     std::vector<triangle> mesh;
     aabb box;
-    material_preset mt; // material_type
+    // material_preset mt; // material_type
     std::vector<area_light> lights;
 
     glm::mat4 transform;
@@ -28,12 +28,11 @@ struct object
 std::vector<std::vector<area_light>> cluster_light_triangles(const std::vector<area_light> &tris);
 area_light merge_light_triangles(const std::vector<area_light> &tris);
 
-object obj_to_mesh(const char *objpath,
+object obj_to_mesh(const char *objpath, // std::shared_ptr<bvh>
                    const char *mtlpath,
                    vec3 offset,
-                   material_preset preset,
-                   material_type mt, // material_type
                    glm::mat4 tmat,
-                   color c, TextureManager &tex_manager);
+                   color c,
+                   TextureManager &tex_manager); // std::vector<area_light> &out_lights);
 
 #endif // MESH_LOADER_HPP

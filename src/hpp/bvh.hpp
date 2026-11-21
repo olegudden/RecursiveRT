@@ -51,6 +51,18 @@ public:
 
     bvh() = default;
 
+    // TLAS constructor
+    bvh(std::vector<triangle> &triangles)
+    {
+        root = build_bvh_binned_fast(triangles, 0, (int)triangles.size(), 0);
+    }
+
+    // TODO TLAS constructor
+    /* bvh(const std::vector<instance> &instances)
+    {
+        root = build_bvh_binned_fast(instances, 0, (int)instances.size(), 0);
+    } */
+
     std::unique_ptr<bvh_node> build_bvh_binned_fast(
         std::vector<triangle> &global_tris,
         int start,

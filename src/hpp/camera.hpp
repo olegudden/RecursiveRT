@@ -3,8 +3,10 @@
 
 #include "light_source.hpp"
 #include "path_guiding.hpp"
+#include "spatial_hash_grid.hpp"
 #include "texture.hpp"
 #include "color.hpp"
+#include "instance.hpp"
 
 #include <vector>
 #include <fstream>
@@ -30,7 +32,7 @@ public:
     int width = 1024;
     int height = 1024;
     int channels = 3;
-    unsigned char *data = stbi_load("Crate_Texture.png", &width, &height, &channels, 3); // TODO multiple textures
+    unsigned char *data = stbi_load("Crate_Texture.png", &width, &height, &channels, 3); // single texture
 
     bool adjustable = false;
     double aspect_ratio = 1.0;
@@ -44,12 +46,26 @@ public:
     std::atomic<int> misses{0};
     std::atomic<int> timedOut{0};
 
+    std::atomic<int> transparentHits{0};
+    std::atomic<int> mirrorHits{0};
+
     camera() = default;
 
     // Render the scene
+    void timed_comparison_render(const std::vector<object> &world,
+                                 std::vector<area_light> &lights,
+                                 bvh &bvh_tree,
+                                 SpatialHashGrid &guiding_grid, // VoxelGrid/SpatialHashGrid
+                                 TextureManager &tex_manager,
+                                 double total_time_budget_seconds,
+                                 bool enable_guiding,
+                                 double training_time_budget_seconds); // 0 for non-guided
     void render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, VoxelGrid &grid, TextureManager &tex_manager);
-    void old_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree); // area_light
-    void new_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, VoxelGrid &guiding_grid, TextureManager &tex_manager);
+    void old_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree);                                                             // area_light
+    void new_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, SpatialHashGrid &guiding_grid, TextureManager &tex_manager); // VoxelGrid/SpatialHashGrid
+
+    void online_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, SpatialHashGrid &guiding_grid, TextureManager &tex_manager);
+    void hybrid_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, SpatialHashGrid &guiding_grid, TextureManager &tex_manager);
 
     // Helper function: uniform random in [0, 1) (for antialiasing)
     double rand_double();
@@ -61,7 +77,6 @@ public:
 
     vec3 sample_cosine_hemisphere(const vec3 &N);
     vec3 sample_uniform_hemisphere(const vec3 &N);
-    vec3 phong_specular(vec3 n, vec3 w0, float s);
 
 private:
     int image_height;
@@ -77,15 +92,12 @@ private:
     void initialize();
 
     color ray_color_triangle(const ray &r, triangle t);
-    color ray_color_phong(const ray &r, const std::vector<object> &world, std::vector<light_source> &lights, bvh &bvh_tree, int recursion_limit);
-    color ray_color_area_light(const ray &r, const std::vector<object> &world, bvh &bvh_tree, const area_light &al, int recursion_limit);
 
     color baseline_rec_trace(const ray &r, const bvh &bvh_tree, int depth);
 
     color nee_rec_trace(const ray &r, const bvh &bvh_tree, int depth, const std::vector<area_light> &lights);
 
     color newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, TextureManager &tex_manager);
-    color newest_rec_trace_RR(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, color throughput);
 
     color oldest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
 
@@ -100,15 +112,28 @@ private:
         TextureManager &tex_manager,
         VoxelGrid &grid,
         bool use_path_guiding,
-        std::vector<point3> path_history);
+        std::vector<point3> path_history,
+        float current_alpha);
 
-    color divided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
-    color next_event_estimation(const vec3 &wo, const vec3 &N, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
-    color indirect_illumination(const vec3 &wo, const vec3 &N, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
+    color guided_rec_trace_HASH(
+        const ray &r,
+        const bvh &bvh_tree,
+        int depth,
+        std::vector<area_light> &lights,
+        TextureManager &tex_manager,
+        SpatialHashGrid &grid, // <--- CHANGED TO SpatialHashGrid
+        SpatialHashGrid &grid2,
+        bool use_path_guiding,
+        std::vector<point3> path_history,
+        float current_alpha);
+
+    color divided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, TextureManager &tex_manager, VoxelGrid &grid, bool use_guiding);
+    color next_event_estimation(const vec3 &wi, const vec3 &n, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, std::vector<float> local_probs, TextureManager &tex_manager, VoxelGrid &grid, float alpha, bool use_guiding);
+    color indirect_illumination(const vec3 &wi, const vec3 &n, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, std::vector<float> local_probs, TextureManager &tex_manager, VoxelGrid &grid, float alpha, bool use_guiding);
     color eval_bsdf(const material &m, const vec3 &p, const vec3 &n, const vec3 &wi, const vec3 &wo, float &pdf_factor, bool &is_delta);
-    vec3 sample_from_bsdf(vec3 N, vec3 w0, material m);
-    color recursion_mirror(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
-    color recursion_transparent(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights);
+    vec3 sample_from_bsdf(const vec3 &wi, const vec3 &n, material m);
+    color recursion_mirror(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, TextureManager &tex_manager, VoxelGrid &grid, bool use_guiding);
+    color recursion_transparent(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, TextureManager &tex_manager, VoxelGrid &grid, bool use_guiding);
 
     void get_heatmap_color(const color &radiance, float &out_r, float &out_g, float &out_b);
 
@@ -119,12 +144,18 @@ private:
         const std::vector<VisualRayPath> &paths,
         const VoxelGrid &guiding_grid);
 
-    void build_orthonormal_basis(vec3 v, vec3 &t, vec3 &b);
+    void export_spatial_hash_grid(
+        const std::string &base_scene_filename,
+        const std::string &base_mtl_filename,
+        const std::string &output_obj_filename,
+        const SpatialHashGrid &hash_grid);
+
     vec3 dielectric_F0_from_tint(const vec3 &spec_tint);
     vec3 sample_phong_lobe(const vec3 &r, const vec3 &n, float s, float &pdf_phong);
     color brdf_diffuse(const material &m);
     color tex_diffuse(hit_info &hi);
     color tex_base_color(const hit_info &hi, TextureManager &tex_manager);
+    color eval_emission(const material &mat, float u, float v, TextureManager &tex_manager);
     color evaluate_disney_diffuse(
         const color &base_color,
         float roughness,
@@ -136,7 +167,7 @@ private:
 
     color brdf_specular(const material &m, const float s, const vec3 &refl_dir, const vec3 &wo);
     float ndf_ggx(float NdotH, float roughness);
-    float ga_smith_ggx(float NdotL, float NdotV, float roughness);
+    // float ga_smith_ggx(float NdotL, float NdotV, float roughness);
     vec3 sample_ggx_lobe(const vec3 &n, float roughness, float r1, float r2, float &pdf);
 
     float evaluate_clearcoat(float NdotH, float clearcoat_roughness, float NdotL, float NdotV, float VdotH);

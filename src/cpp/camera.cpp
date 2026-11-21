@@ -4,12 +4,14 @@
 #include "../hpp/error.hpp"
 #include "../hpp/texture.hpp"
 #include "../hpp/mesh_loader.hpp"
+
 #include <iostream>
 #include <omp.h>
 #include <sstream>
 #include <chrono>
+#include <algorithm>
 
-const int MAX_DEPTH = 2;
+const int MAX_DEPTH = 5;
 const int MIN_DEPTH = 1;
 
 // Allocate the actual storage space for the vector here:
@@ -247,20 +249,111 @@ void camera::export_radiance_forward_paths(
     out_mtl.close();
 }
 
-void camera::build_orthonormal_basis(vec3 v, vec3 &t, vec3 &b)
+void camera::export_spatial_hash_grid(
+    const std::string &base_scene_filename,
+    const std::string &base_mtl_filename,
+    const std::string &output_obj_filename,
+    const SpatialHashGrid &hash_grid)
 {
-    vec3 ze(0.0f, 0.0f, 1.0f);
+    std::ifstream in_scene(base_scene_filename);
+    std::ofstream out_obj(output_obj_filename);
 
-    // n is assumed normalized
-    if (fabs(dot(v, ze)) < 0.999f)
+    std::string unique_mtl_filename = output_obj_filename;
+    size_t ext_pos = unique_mtl_filename.find_last_of(".");
+    if (ext_pos != std::string::npos)
     {
-        t = unit_vector(cross(v, vec3(0.0f, 0.0f, 1.0f)));
+        unique_mtl_filename = unique_mtl_filename.substr(0, ext_pos);
     }
-    else
+    unique_mtl_filename += "_hash_materials.mtl";
+
+    std::ofstream out_mtl(unique_mtl_filename);
+
+    if (!out_obj.is_open() || !out_mtl.is_open())
     {
-        t = unit_vector(cross(v, vec3(0.0f, 1.0f, 0.0f)));
+        std::cerr << "Error: Cannot open output files for hash grid visualization." << std::endl;
+        return;
     }
-    b = cross(v, t);
+
+    int vertex_counter = 0;
+
+    // Link Material Libraries
+    std::string base_mtl_short = base_mtl_filename.substr(base_mtl_filename.find_last_of("/\\") + 1);
+    out_obj << "mtllib " << base_mtl_short << "\n";
+    std::string path_mtl_short = unique_mtl_filename.substr(unique_mtl_filename.find_last_of("/\\") + 1);
+    out_obj << "mtllib " << path_mtl_short << "\n\n";
+
+    // 1. Copy original scene geometry
+    if (in_scene.is_open())
+    {
+        std::string line;
+        while (std::getline(in_scene, line))
+        {
+            std::stringstream ss(line);
+            std::string prefix;
+            ss >> prefix;
+
+            if (prefix == "mtllib")
+                continue;
+            if (prefix == "v")
+                vertex_counter++;
+            out_obj << line << "\n";
+        }
+        in_scene.close();
+    }
+
+    int next_global_vertex_idx = vertex_counter + 1;
+    out_obj << "\ng spatial_hash_voxels\n";
+
+    // Define a simple bright color for active hash voxels in the material file
+    out_mtl << "newmtl Mat_HashVoxel\n";
+    out_mtl << "Kd 0.0 0.8 1.0\n"; // Cyan wireframe color
+    out_mtl << "Ke 0.0 0.4 0.5\n";
+    out_mtl << "\n";
+
+    out_obj << "usemtl Mat_HashVoxel\n";
+
+    // 2. Iterate through the sparse hash map entries
+    // Note: If multi-threading or thread safety is required, wrap this access safely or call post-render
+    float s = hash_grid.voxel_size;
+    point3 origin = hash_grid.origin;
+
+    // Accessing the internal grid map (ensure you have a const getter or friend access if 'grid' is private)
+    for (const auto &pair : hash_grid.grid)
+    {
+        const CellKey &key = pair.first;
+        const Voxel &voxel = pair.second;
+
+        // Reconstruct world-space minimum corner of this specific voxel cell
+        // based on its cell indices (key.x, key.y, key.z) and normal orientation
+        point3 v_min = origin + vec3(
+                                    key.x * s,
+                                    key.y * s,
+                                    key.z * s);
+        point3 v_max = v_min + vec3(s, s, s);
+
+        // Optional: you can color or scale the visualization based on how much energy/samples it contains!
+
+        // Write 8 vertices for this voxel box
+        out_obj << "v " << v_min.x() << " " << v_min.y() << " " << v_min.z() << "\n"
+                << "v " << v_max.x() << " " << v_min.y() << " " << v_min.z() << "\n"
+                << "v " << v_max.x() << " " << v_max.y() << " " << v_min.z() << "\n"
+                << "v " << v_min.x() << " " << v_max.y() << " " << v_min.z() << "\n"
+                << "v " << v_min.x() << " " << v_min.y() << " " << v_max.z() << "\n"
+                << "v " << v_max.x() << " " << v_min.y() << " " << v_max.z() << "\n"
+                << "v " << v_max.x() << " " << v_max.y() << " " << v_max.z() << "\n"
+                << "v " << v_min.x() << " " << v_max.y() << " " << v_max.z() << "\n";
+
+        // Relative indexing for wireframe lines (same as your uniform grid)
+        out_obj << "l -8 -7 -6 -5 -8\n" // Bottom ring
+                << "l -4 -3 -2 -1 -4\n" // Top ring
+                << "l -8 -4\n"          // Pillar 1
+                << "l -7 -3\n"          // Pillar 2
+                << "l -6 -2\n"          // Pillar 3
+                << "l -5 -1\n";         // Pillar 4
+    }
+
+    out_obj.close();
+    out_mtl.close();
 }
 
 // small dielectric F0 helper — keeps dielectrics near 4% reflectance, optionally mild tint
@@ -275,16 +368,21 @@ float camera::balance_heuristic(float pdf_a, float pdf_b)
     return pdf_a / (pdf_a + pdf_b);
 }
 
-float camera::power_heuristic(float pdf_a, float pdf_b) // try different betas
+float camera::power_heuristic(float pdf_a, float pdf_b)
 {
-    float a = pdf_a * pdf_a * pdf_a * pdf_a * pdf_a;
-    float b = pdf_b * pdf_b * pdf_b * pdf_b * pdf_b;
+    // Standard beta = 2 (or use your beta)
+    float a = pdf_a * pdf_a;
+    float b = pdf_b * pdf_b;
 
     float denom = a + b;
-    if (denom <= 1e-6f)
-        return 0.0f; // Blocks 0 / 0 NaN generation completely
+    if (denom <= 1e-6f || !std::isfinite(denom))
+        return 0.0f;
 
-    return (a / (a + b));
+    // If 'a' or 'denom' hit infinity, handle it gracefully
+    if (!std::isfinite(a) || !std::isfinite(denom))
+        return 1.0f; // If pdf_a is infinitely larger than pdf_b, weight is 1.0
+
+    return (a / denom);
 }
 
 // BRDFs
@@ -330,6 +428,15 @@ color camera::tex_base_color(const hit_info &hi, TextureManager &tex_manager)
     }
 
     return diffuse_color;
+}
+
+color camera::eval_emission(const material &mat, float u, float v, TextureManager &tex_manager)
+{
+    if (!mat.has_emissive_tex)
+        return mat.emission;
+
+    color mask = tex_manager.sample_texture_from_cache(tex_manager, mat.emissive_tex_id, u, v);
+    return mat.emission * mask;
 }
 
 color camera::evaluate_disney_diffuse(
@@ -428,7 +535,11 @@ color camera::evaluate_sheen(const color &base_color, float VdotH)
 // Random helpers
 double camera::rand_double()
 {
-    static thread_local std::mt19937 generator(std::random_device{}());
+    static thread_local std::mt19937 generator(
+        static_cast<unsigned int>(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count() ^
+            ((omp_get_thread_num() + 1) * 0x9e3779b9) // Hash offset
+            ));
     static thread_local std::uniform_real_distribution<double> distribution(0.0, 1.0);
     return distribution(generator);
 }
@@ -481,27 +592,6 @@ vec3 camera::sample_uniform_hemisphere(const vec3 &N)
     vec3 bitangent = cross(N, tangent);
 
     return unit_vector(x * tangent + y * bitangent + eps0 * N);
-}
-
-vec3 camera::phong_specular(vec3 n, vec3 w0, float s) // not used
-{
-    vec3 r = reflect(w0, n);
-    float eta1 = rand_float();
-    float eta2 = rand_float();
-
-    float phi = 2.0f * float(M_PI) * eta1;
-    float cosTheta = std::pow(eta2, 1.0f / (s + 1.0f)); // importance sampling
-    float sinTheta = std::sqrt(std::max(0.0f, 1.0f - cosTheta * cosTheta));
-
-    float x = sinTheta * std::cos(phi);
-    float y = sinTheta * std::sin(phi);
-    float z = cosTheta;
-
-    vec3 t, b;
-    build_orthonormal_basis(n, t, b);
-
-    vec3 wi = x * t + y * b + z * r;
-    return unit_vector(wi);
 }
 
 vec3 camera::sample_phong_lobe(const vec3 &r, const vec3 &n, float s, float &pdf_phong)
@@ -587,324 +677,6 @@ color camera::ray_color_triangle(const ray &r, triangle t)
         float s = 0.5f * (unit_vector(r.direction()).y() + 1.0f);
         return (1.0f - s) * color(0.8, 0.9, 1.0) + s * color(0.4, 0.5, 0.9);
     }
-}
-
-color camera::ray_color_phong(const ray &r, const std::vector<object> &world, std::vector<light_source> &lights, bvh &bvh_tree, int recursion_limit)
-{
-    float bounce_attenuation = 0.5f; // Reduce light contribution slightly per bounce
-    if (recursion_limit <= 0)
-        return color(0, 0, 0);
-    hit_info final_hi;
-    bool hit_anything = false;
-    float closest_t = FLT_MAX;
-    /* for (const object &obj : world) // BOUNDING BOX PER OBJECT
-    {
-        hit_info hibox;
-        if (!obj.box.hit(r, 0.0f, closest_t, hibox))
-        continue;
-        for (triangle tri : obj.mesh)
-        {
-            hit_info temp_hi;
-            if (tri.hit(r, 1e-5f, closest_t, temp_hi))
-            {
-                closest_t = temp_hi.t;
-                final_hi = temp_hi;
-                hit_anything = true;
-            }
-        }
-    } */
-    if (!bvh_tree.hit(r, 1e-4f, FLT_MAX, final_hi)) // BVH check
-    {
-        // Sky background
-        float s = 0.5f * (unit_vector(r.direction()).y() + 1.0f);
-        return (1.0f - s) * color(0.8, 0.9, 1.0) + s * color(0.4, 0.5, 0.9);
-    }
-    /* for (const object &obj : world) // BRUTE-FORCE
-    {
-        for (triangle tri : obj.mesh)
-        {
-        hit_info temp_hi;
-        if (tri.hit(r, 1e-5f, closest_t, temp_hi))
-        {
-            hit_anything = true;
-            closest_t = temp_hi.t;
-            final_hi = temp_hi;
-        }
-        }
-    } */
-    /* if (!hit_anything) // BB & BF
-        {
-            float s = 0.5f * (unit_vector(r.direction()).y() + 1.0f);
-            return (1.0f - s) * color(0.8, 0.9, 1.0) + s * color(0.4, 0.5, 0.9);
-    }*/
-    color final_color(0, 0, 0);
-    vec3 N = unit_vector(final_hi.normal);
-    vec3 V = unit_vector(-r.direction());
-    for (const light_source &light : lights)
-    {
-        vec3 L_un = light.pos - final_hi.p;
-        // float distance_squared = dot(L_un, L_un);
-        vec3 L = unit_vector(L_un);
-        vec3 light_R = reflect(-L, N);
-        vec3 view_dir = unit_vector(r.direction());
-        float dist = std::max(L_un.length(), 1e-3f);
-        float attenuation = std::clamp(5.0 / L_un.length(), 0.0, 1.0); // inverse distance falloff
-        // float attenuation = 1.0f / (1.0f + L_un.length() * L_un.length()); // distance_squared (theory)
-        // float spec_strength = 0.7f;
-        // float ambient_strength = 0.3f;
-        float diff = std::clamp(dot(N, L), 0.0f, 1.0f);
-        // float spec = pow(std::clamp(dot(light_R, V), 0.0f, 1.0f), final_hi.mat.spec_exponent);
-        float spec_angle = std::clamp(dot(light_R, V), 0.0f, 1.0f);
-        float spec = (spec_angle > 0.0f) ? pow(spec_angle, final_hi.mat.spec_exponent) : 0.0f;
-        if (!std::isfinite(spec))
-            spec = 0.0f;
-        color ambient = final_hi.mat.ambient; // + strength?
-        color diffuse = diff * final_hi.mat.diffuse * light.col * light.intensity;
-        color specular = spec * final_hi.mat.specular * light.col * light.intensity;
-        color phong = ambient + attenuation * (diffuse + specular);
-        color hit_color;
-        // float eps = 1e-4f * std::max(1.0f, final_hi.p.length());
-        float eps = 1e-4f;
-        switch (final_hi.mt)
-        {
-        case material_type::diffuse:
-        {
-            bool in_shadow = false; // HARD SHADOWS
-            ray shadow_ray(final_hi.p + eps * N, L);
-            float light_dist = (light.pos - final_hi.p).length();
-            /* for (object obj : world) // BOUNDING BOX PER OBJECT
-            {
-                hit_info shadow_hit;
-                if (!obj.box.hit(shadow_ray, 0.001f, light_dist, shadow_hit))
-                continue;
-                for (triangle tri : obj.mesh)
-                {
-                    if (tri.hit(shadow_ray, 1e-4f, light_dist, shadow_hit))
-                    {
-                        in_shadow = true; break;
-                        }
-                    }
-                    if (in_shadow)
-                    break;
-                }
-            */
-            hit_info shadow_hit; // HARD SHADOWS
-            if (bvh_tree.hit(shadow_ray, eps, light_dist, shadow_hit))
-            {
-                in_shadow = true;
-            }
-            hit_color = in_shadow ? ambient : phong;
-            break;
-        }
-        case material_type::mirror:
-        {
-            vec3 surface_normal = dot(unit_vector(r.direction()), N) < 0.0f ? N : -N;
-            vec3 reflect_dir = reflect(view_dir, surface_normal);
-            ray reflected_ray(final_hi.p + eps * surface_normal, reflect_dir);
-            color reflected_color = bounce_attenuation * ray_color_phong(reflected_ray, world, lights, bvh_tree, recursion_limit - 1);
-            float reflectivity = final_hi.mat.reflectivity;
-            if (reflectivity >= 1.0f)
-            {
-                hit_color = reflected_color;
-            }
-            else
-            {
-                hit_color = reflectivity * reflected_color + (1.0f - reflectivity) * phong;
-            }
-            break;
-        }
-        case material_type::transparent:
-        {
-            /*
-            vec3 surface_normal = dot(r.direction(), N) < 0.0f ? N : -N;
-            bool front_face = dot(r.direction(), N) < 0.0f;
-            float eta_ratio = front_face ? (1.0f / final_hi.mat.ior) : final_hi.mat.ior;
-            // Fresnel float cos_theta = std::clamp(dot(-view_dir, surface_normal), 0.0f, 1.0f);
-            float reflect_ratio = fresnel_schlick(cos_theta, eta_ratio);
-            */
-
-            vec3 surface_normal = dot(unit_vector(r.direction()), N) < 0.0f ? N : -N;
-            bool entering = dot(unit_vector(r.direction()), N) < 0.0f;
-            float n1 = entering ? 1.0f : final_hi.mat.ior;
-            float n2 = entering ? final_hi.mat.ior : 1.0f;
-            // float eta_ratio = n1 / n2;
-            float eta_ratio = entering ? (1.0f / final_hi.mat.ior) : final_hi.mat.ior;
-            float cos_theta = std::clamp(dot(-unit_vector(r.direction()), surface_normal), 0.0f, 1.0f);
-
-            /* vec3 surface_normal = final_hi.normal; // physics normal
-            bool entering = final_hi.front_face;
-
-            float n1 = entering ? 1.0f : final_hi.mat.ior;
-            float n2 = entering ? final_hi.mat.ior : 1.0f;
-
-            float eta_ratio = n1 / n2;
-
-            float cos_theta = std::clamp(dot(-unit_vector(r.direction()), surface_normal), 0.0f, 1.0f); */
-
-            float reflect_ratio = fresnel_schlick(cos_theta, n1, n2); // Reflect
-            ray reflected_ray(final_hi.p + eps * surface_normal, reflect(unit_vector(r.direction()), surface_normal));
-            color reflected_color = bounce_attenuation * ray_color_phong(reflected_ray, world, lights, bvh_tree, recursion_limit - 1);
-            // Refract
-            vec3 refract_dir;
-            color refracted_color(0, 0, 0);
-            if (refract(unit_vector(r.direction()), surface_normal, eta_ratio, refract_dir))
-            {
-                ray refracted_ray(final_hi.p - eps * surface_normal, refract_dir);
-                refracted_color = bounce_attenuation * ray_color_phong(refracted_ray, world, lights, bvh_tree, recursion_limit - 1);
-            }
-            else
-            {
-                // total internal reflection -> treat as reflection only
-                hit_color = reflected_color;
-            }
-            // Mix
-            // refracted_color = refracted_color * final_hi.mat.transmission_color; // adds colored tint
-            color mixed = reflect_ratio * reflected_color + (1.0f - reflect_ratio) * refracted_color;
-            // hit_color = 0.8f * hit_color + 0.2f * phong; // adds surface shading
-            // Optional tint (soft specular)
-            hit_color = mixed; // + specular;
-            break;
-        }
-        default:
-            hit_color = phong;
-            break;
-        }
-        final_color += hit_color;
-    }
-    return final_color; // tone mapping/gamma happens in write_color()
-}
-
-color camera::ray_color_area_light(const ray &r, const std::vector<object> &world, bvh &bvh_tree, const area_light &al, int recursion_limit)
-{
-    if (recursion_limit <= 0)
-        return color(0, 0, 0);
-
-    hit_info hi;
-    if (!bvh_tree.hit(r, 1e-4f, FLT_MAX, hi))
-    {
-        // non-black background helps debug reflections
-        float t = 0.5f * (unit_vector(r.direction()).y() + 1.0f);
-        return (1.0f - t) * color(0.8, 0.9, 1.0) + t * color(0.4, 0.5, 0.9);
-    }
-
-    // If hit an emissive surface (the area light), return emission
-    if (hi.mat.is_emissive())
-        return hi.mat.emission;
-
-    vec3 N = unit_vector(hi.normal);
-    vec3 V = unit_vector(-r.direction()); // view vector (from hit toward camera)
-    float eps = 1e-4f;
-
-    // Start with small ambient (or zero while debugging)
-    color result = 0.4 * hi.mat.ambient;
-    // color result = color(0, 0, 0);
-
-    // ==========================
-    // Direct area-light sampling (soft shadows)
-    // ==========================
-    const int num_samples = 20;
-    color light_sum(0, 0, 0);
-
-    float area = al.e1.length() * al.e2.length();
-    vec3 light_normal = unit_vector(al.normal);
-
-    for (int s = 0; s < num_samples; ++s)
-    {
-        point3 light_pos = sample_area_light(al);
-        vec3 to_light = light_pos - hi.p;
-        float dist = to_light.length();
-        if (dist <= 1e-6f)
-            continue;
-        vec3 L = unit_vector(to_light);
-
-        // don't mutate N — use local copy for orientation
-        vec3 Nsurf = N;
-        if (dot(Nsurf, L) < 0.0f)
-            Nsurf = -Nsurf;
-
-        // geometry checks
-        float NdotL = std::max(dot(Nsurf, L), 0.0f);
-        float LdotNL = std::max(dot(-L, light_normal), 0.0f);
-        if (NdotL <= 0.0f || LdotNL <= 0.0f)
-            continue;
-
-        // shadow ray: test only up to the sampled light point (dist - eps)
-        ray shadow_ray(hi.p + eps * Nsurf, L);
-        hit_info sh;
-        bool blocked = bvh_tree.hit(shadow_ray, eps, dist - eps, sh) && !sh.mat.is_emissive();
-        if (blocked)
-            continue;
-
-        // geometry factor (uniform area sampling -> factor = (N·L * LdotNL) / dist^2)
-        float geom = (NdotL * LdotNL) / (dist * dist);
-
-        // Lambert (or Phong) — here we use hi.mat.diffuse as albedo
-        light_sum += al.emission * hi.mat.diffuse * geom;
-
-        // Optional simple Phong specular (keeps same look you had)
-        vec3 R = unit_vector(reflect(-L, Nsurf)); // reflect incoming light about Nsurf
-        float spec_angle = std::max(dot(R, V), 0.0f);
-        if (spec_angle > 0.0f)
-            light_sum += al.emission * hi.mat.specular * pow(spec_angle, hi.mat.spec_exponent) * (LdotNL / (dist * dist));
-    }
-
-    result += light_sum / float(num_samples);
-
-    // ==========================
-    // Reflection
-    // ==========================
-    if (hi.mat.reflectivity > 0.0f)
-    {
-        // Orient surface normal for reflection (do NOT reuse mutated N)
-        vec3 surface_normal = (dot(r.direction(), N) < 0.0f) ? N : -N;
-
-        // incident is the ray direction (pointing toward hit); compute reflected direction:
-        vec3 incident = unit_vector(r.direction()); // points *into* the surface
-        vec3 reflect_dir = incident - 2.0f * dot(incident, surface_normal) * surface_normal;
-        reflect_dir = unit_vector(reflect_dir);
-
-        ray reflected_ray(hi.p + eps * surface_normal, reflect_dir);
-        color reflected_color = ray_color_area_light(reflected_ray, world, bvh_tree, al, recursion_limit - 1);
-
-        // mix reflection with local result
-        result = hi.mat.reflectivity * reflected_color + (1.0f - hi.mat.reflectivity) * result;
-    }
-
-    // ==========================
-    // Refraction (transparent)
-    // ==========================
-    if (hi.mat.transparency > 0.0f)
-    {
-        // Determine correct normal orientation and eta
-        bool entering = dot(r.direction(), N) < 0.0f;
-        vec3 surface_normal = entering ? N : -N;
-        float n1 = entering ? 1.0f : hi.mat.ior;
-        float n2 = entering ? hi.mat.ior : 1.0f;
-        float eta = n1 / n2;
-
-        vec3 incident = unit_vector(r.direction());
-        vec3 refract_dir;
-        // Use your existing refract helper which should return bool and fill refract_dir
-        if (refract(incident, surface_normal, eta, refract_dir))
-        {
-            refract_dir = unit_vector(refract_dir);
-            ray refracted_ray(hi.p - eps * surface_normal, refract_dir);
-            color refracted_color = ray_color_area_light(refracted_ray, world, bvh_tree, al, recursion_limit - 1);
-
-            result = (1.0f - hi.mat.transparency) * result + hi.mat.transparency * refracted_color;
-        }
-        else
-        {
-            // total internal reflection: treat as reflection
-            vec3 reflect_dir = incident - 2.0f * dot(incident, surface_normal) * surface_normal;
-            reflect_dir = unit_vector(reflect_dir);
-            ray reflected_ray(hi.p + eps * surface_normal, reflect_dir);
-            color reflected_color = ray_color_area_light(reflected_ray, world, bvh_tree, al, recursion_limit - 1);
-            result = reflected_color;
-        }
-    }
-
-    return result;
 }
 
 color camera::baseline_rec_trace(const ray &r, const bvh &bvh_tree, int depth)
@@ -1203,7 +975,7 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
     // =========================================================================
     // PATH A: SUBSURFACE SCATTERING LOBE (BSSRDF)
     // =========================================================================
-    if ((depth == 0) && SUBSURFACE_PROB > 1e-4f && xi_lobe >= SPEC_PROB && xi_lobe < (SPEC_PROB + SUBSURFACE_PROB))
+    /* if ((depth == 0) && SUBSURFACE_PROB > 1e-4f && xi_lobe >= SPEC_PROB && xi_lobe < (SPEC_PROB + SUBSURFACE_PROB))
     {
         color total_sss_illumination(0, 0, 0);
         int sss_samples = 10;
@@ -1310,7 +1082,7 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
                 timedOut++;
         }
         return sss_res;
-    }
+    } */
 
     int light_samples = 1;
     int brdf_samples = 1;
@@ -1336,7 +1108,10 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
                 float r1 = (static_cast<float>(x) + rand_float()) / static_cast<float>(grid_dim);
                 float r2 = (static_cast<float>(y) + rand_float()) / static_cast<float>(grid_dim);
                 light_sample sample_data;
-                sample_data.p = sample_stratified(sample_data.normal, L, sample_data.pdf_area, r1, r2);
+                vec3 sampled_uv;
+                sample_data.p = sample_stratified(sample_data.normal, L, sample_data.pdf_area, r1, r2, sampled_uv, sample_data.mat);
+                sample_data.u = sampled_uv.x();
+                sample_data.v = sampled_uv.y();
                 pts.push_back(sample_data);
             }
         }
@@ -1349,6 +1124,7 @@ color camera::newest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
             vec3 light_dir = Lvec / dist;
 
             vec3 light_normal = ls.normal;
+
             float NdotL = std::clamp(dot(n, light_dir), 0.0f, 1.0f);
             float NdotV = std::clamp(dot(n, V), 0.0f, 1.0f);
             float cos_l = std::clamp(dot(light_normal, -light_dir), 0.0f, 1.0f);
@@ -1608,6 +1384,79 @@ void camera::debug_nan_state(const std::string &location, float NdotL, float Ndo
     std::cout << "Combined PDF: " << pdf_brdf << std::endl;
 }
 
+// Firefly Inspection logger that prints exact numeric values and likely fixes
+inline void log_firefly_diagnostic(
+    const char *branch_name,
+    const color &contrib,
+    const color &incoming_radiance,
+    const color &fr,
+    float cos_theta,
+    float pdf_brdf,
+    float alpha,
+    float pdf_guided,
+    float pdf_mat,
+    float mis_w,
+    bool sample_was_guided,
+    const vec3 &wo,
+    const vec3 &n,
+    int depth)
+{
+#pragma omp critical
+    {
+        std::cout << "\n================ [FIREFLY DETECTED in " << branch_name << "] ================"
+                  << "\n  Depth:               " << depth
+                  << "\n  Contrib Luminance:   " << luminance(contrib) << " (RGB: " << contrib << ")"
+                  << "\n  Incoming Radiance:   " << incoming_radiance << " (Lum: " << luminance(incoming_radiance) << ")"
+                  << "\n  BRDF (fr):           " << fr
+                  << "\n  Cos(N, wo):          " << cos_theta
+                  << "\n  Combined PDF:        " << pdf_brdf
+                  << "\n  Sampling Strategy:   " << (sample_was_guided ? "PATH GUIDED" : "MATERIAL BSDF")
+                  << "\n  - pdf_guided:        " << pdf_guided
+                  << "\n  - pdf_material:      " << pdf_mat
+                  << "\n  - alpha:             " << alpha;
+
+        if (mis_w >= 0.0f)
+        {
+            std::cout << "\n  - MIS Weight (w):    " << mis_w;
+        }
+
+        std::cout << "\n\n  --- LIKELY CAUSES & FIXES ---";
+
+        // Cause 1: Extremely small PDF division
+        if (pdf_brdf < 1e-3f)
+        {
+            std::cout << "\n  [!] VERY LOW COMBINED PDF (" << pdf_brdf << ")"
+                      << "\n      -> FIX: Increase 'epsilon_floor' in your VoxelGrid from 1e-4f to 1e-2f (0.01f)."
+                      << "\n      -> FIX: Ensure alpha is not 1.0f on glossy surfaces so material PDF acts as a safety floor.";
+        }
+
+        // Cause 2: Guided sample hit a glossy specular highlight away from main lobe
+        if (sample_was_guided && fr.length() > 10.0f)
+        {
+            std::cout << "\n  [!] GUIDED SAMPLE HIT GLOSSY SPECULAR PEAK (fr = " << fr.length() << ")"
+                      << "\n      -> FIX: Pure path guiding on glossy surfaces causes fireflies! Blend with MIS (alpha <= 0.5)"
+                      << "\n              or use defensive BSDF sampling on surfaces with exponent s > 20.0.";
+        }
+
+        // Cause 3: Grazing angle evaluation
+        if (cos_theta < 0.01f)
+        {
+            std::cout << "\n  [!] GRAZING ANGLE HIT (cos_theta = " << cos_theta << ")"
+                      << "\n      -> FIX: Ensure cos_theta / pdf doesn't explode near horizon boundaries.";
+        }
+
+        // Cause 4: Unclamped Emissive Light Hit
+        if (luminance(incoming_radiance) > 100.0f)
+        {
+            std::cout << "\n  [!] EXTREME INCOMING RADIANCE (" << luminance(incoming_radiance) << ")"
+                      << "\n      -> FIX: Clamp incoming radiance during training or use light source clamping/MIS.";
+        }
+
+        std::cout << "\n=================================================================\n"
+                  << std::endl;
+    }
+}
+
 color camera::guided_rec_trace(
     const ray &r,
     const bvh &bvh_tree,
@@ -1616,37 +1465,12 @@ color camera::guided_rec_trace(
     TextureManager &tex_manager,
     VoxelGrid &grid,
     bool use_path_guiding,
-    std::vector<point3> path_history)
+    std::vector<point3> path_history,
+    float current_alpha)
 {
     const float eps = 1e-4f;
     if (depth >= MAX_DEPTH)
     {
-        // if (depth == 0)
-        //   timedOut++;
-
-        // --- ADD THIS TO CAPTURE PATHS THAT ENDED WITHOUT HITTING A LIGHT ---
-        /* bool hits_target_voxel = false;
-        for (const auto &p : path_history)
-        {
-            if (grid.get_voxel_index(p) == grid.get_voxel_index(test_point))
-            {
-                hits_target_voxel = true;
-                break;
-            }
-        }
-        if (hits_target_voxel)
-        {
-            VisualRayPath full_path;
-            full_path.vertices = path_history;
-#pragma omp critical
-            {
-                if (g_heatmap_full_paths.size() < 1000)
-                {
-                    g_heatmap_full_paths.push_back(full_path);
-                }
-            }
-        } */
-        // ---------------------------------------------------------------------
         return color(0, 0, 0);
     }
 
@@ -1665,7 +1489,8 @@ color camera::guided_rec_trace(
         if (depth == 0)
             directHits++;
 
-        return hi.mat.emission;
+        // return hi.mat.emission;
+        return eval_emission(hi.mat, hi.u, hi.v, tex_manager);
     }
 
     // 3. Normal Setup and Geometry Alignment
@@ -1686,7 +1511,7 @@ color camera::guided_rec_trace(
     // ====================================================
 
     // === PERFECT GLASS / DIELECTRIC ===
-    /* if (hi.mat.transparency > 1e-6f)
+    if (hi.mat.transparency > 1e-6f)
     {
         float n1 = front_face ? 1.0f : hi.mat.ior;
         float n2 = front_face ? hi.mat.ior : 1.0f;
@@ -1703,24 +1528,24 @@ color camera::guided_rec_trace(
 
         ray refl_ray(hi.p + spec_refl_dir * eps, spec_refl_dir);
         // Path guiding is disabled (false) down specular channels to avoid variance spikes
-        color col_refl = guided_rec_trace(refl_ray, bvh_tree, depth + 1, lights, tex_manager, grid, false);
+        color col_refl = guided_rec_trace(refl_ray, bvh_tree, depth + 1, lights, tex_manager, grid, false, std::vector<point3>(), current_alpha);
 
         if (!can_refract)
             return col_refl; // Total Internal Reflection
 
         ray refr_ray(hi.p + refr_dir * eps, refr_dir);
-        color col_refr = guided_rec_trace(refr_ray, bvh_tree, depth + 1, lights, tex_manager, grid, false);
+        color col_refr = guided_rec_trace(refr_ray, bvh_tree, depth + 1, lights, tex_manager, grid, false, std::vector<point3>(), current_alpha);
 
         return R * col_refl + (1.0f - R) * col_refr;
-    } */
+    }
 
     // === PERFECT MIRROR DELTA LAYER ===
-    /* if (hi.mat.is_delta_specular)
-     {
-         color fr = hi.mat.specular;
-         ray new_ray(hi.p + refl_dir * eps, refl_dir);
-         return guided_rec_trace(new_ray, bvh_tree, depth + 1, lights, tex_manager, grid, false) * fr;
-     } */
+    if (hi.mat.is_delta_specular)
+    {
+        color fr = hi.mat.specular;
+        ray new_ray(hi.p + refl_dir * eps, refl_dir);
+        return guided_rec_trace(new_ray, bvh_tree, depth + 1, lights, tex_manager, grid, false, std::vector<point3>(), current_alpha) * fr;
+    }
 
     // ====================================================
     // MATERIAL PROBABILITY & DYNAMIC FRESNEL SETUP
@@ -1748,7 +1573,7 @@ color camera::guided_rec_trace(
     std::vector<point3> current_path_history = path_history;
     current_path_history.push_back(hi.p);
 
-    float alpha = 1.0f; // exploration vs exploitation
+    float alpha = current_alpha; // exploration vs exploitation
     // ====================================================
     // 2) NEXT EVENT ESTIMATION (DIRECT LIGHTING LOOP)
     // ====================================================
@@ -1772,7 +1597,10 @@ color camera::guided_rec_trace(
                 float r2 = (static_cast<float>(y) + rand_float()) / static_cast<float>(grid_dim);
 
                 light_sample sample_data;
-                sample_data.p = sample_stratified(sample_data.normal, L, sample_data.pdf_area, r1, r2);
+                vec3 sampled_uv;
+                sample_data.p = sample_stratified(sample_data.normal, L, sample_data.pdf_area, r1, r2, sampled_uv, sample_data.mat);
+                sample_data.u = sampled_uv.x();
+                sample_data.v = sampled_uv.y();
                 pts.push_back(sample_data);
             }
         }
@@ -1793,11 +1621,14 @@ color camera::guided_rec_trace(
             cos_s = std::min(cos_s, 1.0f);
             cos_l = std::min(cos_l, 1.0f);
 
-            if (!visible(hi.p + wo * eps, ls.p, bvh_tree))
+            vec3 shadow_origin = hi.p + n * (dot(wo, n) < 0.0f ? -eps : eps);
+            if (!visible(shadow_origin, ls.p, bvh_tree))
                 continue;
 
             float pdf_light = (dist_squared / cos_l) * ls.pdf_area;
             float pdf_light_new = pdf_light * selected_weight;
+            if (pdf_light_new <= 1e-5f)
+                continue;
 
             // 1. Properly normalize the diffuse component by PI
             color f_diffuse = tex_base_color(hi, tex_manager) / M_PI;
@@ -1818,41 +1649,10 @@ color camera::guided_rec_trace(
             }
 
             float w = power_heuristic(pdf_light_new, pdf_final_eval);
-            color sample_nee_contrib = (w * fr * cos_s * L.emission / pdf_light_new);
+            color Le = eval_emission(ls.mat, ls.u, ls.v, tex_manager);
+            color sample_nee_contrib = (w * fr * cos_s * Le / pdf_light_new);
+            // color sample_nee_contrib = (w * fr * cos_s * L.emission / pdf_light_new);
             sum_light += sample_nee_contrib;
-
-            // --- NEE PATH DIAGNOSTIC LOGGING (DISABLED) ---
-            /* if (depth == 0 && sample_nee_contrib.length() > 0.0f && test_point.length() > 1e-4f)
-            {
-                std::vector<point3> full_path_verts = current_path_history;
-                full_path_verts.push_back(ls.p);
-
-                bool hits_target_voxel = false;
-                for (const auto &p : full_path_verts)
-                {
-                    if (grid.get_voxel_index(p) == grid.get_voxel_index(test_point))
-                    {
-                        hits_target_voxel = true;
-                        break;
-                    }
-                }
-
-                if (hits_target_voxel)
-                {
-                    VisualRayPath full_path;
-                    full_path.vertices = full_path_verts;
-                    full_path.vertex_radiance.resize(full_path_verts.size(), color(0, 0, 0));
-                    full_path.vertex_radiance[full_path_verts.size() - 1] = L.emission;
-                    full_path.vertex_radiance[full_path_verts.size() - 2] = sample_nee_contrib;
-
-                    #pragma omp critical
-                    {
-                        if (g_heatmap_full_paths.size() < 1000)
-                            g_heatmap_full_paths.push_back(full_path);
-                    }
-                }
-            }
-            */
         }
         if (light_samples > 1)
             sum_light /= float(light_samples);
@@ -1870,16 +1670,32 @@ color camera::guided_rec_trace(
         vec3 wo;
         float pdf_brdf = 0.0f;
 
+        float pdf_guided;
+        float pdf_material_total;
         if (use_path_guiding)
         {
-            float pdf_guided = 0.0f;
+            pdf_guided = 0.0f;
 
             if (rand_float() < alpha)
             {
                 // Ensure sample_guided_direction internally uses the same spatial interpolation!
                 wo = grid.sample_guided_direction(hi.p, n, pdf_guided); // interpolation? (2)
                 sample_was_guided = true;
-                // std::cout << "sample guided PDF: " << pdf_guided << " , get guided PDF: " << grid.get_guided_pdf(hi.p, n, wo) << std::endl;
+
+                // PDF MISMATCH CHECK
+                float pdf_eval_check = grid.get_guided_pdf(hi.p, n, wo);
+                if (std::abs(pdf_guided - pdf_eval_check) > 1e-3f)
+                {
+#pragma omp critical
+                    {
+                        std::cout << "\n================ [PDF MISMATCH DEBUG] ================"
+                                  << "\nHit Position: " << hi.p << " | Normal: " << n
+                                  << "\nRay Dir (wo): " << wo
+                                  << "\nDot(n, wo):   " << dot(n, wo)
+                                  << "\nSampled PDF:  " << pdf_guided
+                                  << "\nEvaluated PDF:" << pdf_eval_check << std::endl;
+                    }
+                }
             }
             else
             {
@@ -1895,7 +1711,7 @@ color camera::guided_rec_trace(
             float cos_r = std::max(0.0f, dot(refl_dir, wo));
             float pdf_diff_pure = cos_n / M_PI;
             float pdf_spec_pure = (s + 2.0f) * std::pow(cos_r, s) / (2.0f * M_PI);
-            float pdf_material_total = SPEC_PROB * pdf_spec_pure + DIFF_PROB * pdf_diff_pure;
+            pdf_material_total = SPEC_PROB * pdf_spec_pure + DIFF_PROB * pdf_diff_pure;
 
             pdf_brdf = alpha * pdf_guided + (1.0f - alpha) * pdf_material_total;
         }
@@ -1926,7 +1742,9 @@ color camera::guided_rec_trace(
         color fr = f_diffuse * DIFF_PROB + f_specular * SPEC_PROB;
         // color fr = tex_base_color(hi, tex_manager) + brdf_specular(hi.mat, s, refl_dir, wo);
 
-        ray new_ray(hi.p + wo * eps, wo);
+        // Use the correctly oriented normal 'n' to push the origin clear of the surface
+        vec3 offset_origin = hi.p + n * (dot(wo, n) < 0.0f ? -eps : eps);
+        ray new_ray(offset_origin, wo);
         hit_info nh;
         if (!bvh_tree.hit(new_ray, eps, FLT_MAX, nh))
         {
@@ -1967,7 +1785,10 @@ color camera::guided_rec_trace(
             float pdf_light_new = pdf_light * local_probs[nh.mat.light_id];
 
             float w = power_heuristic(pdf_brdf, pdf_light_new);
-            color sample_brdf_contrib = w * nh.mat.emission * fr * cos_theta / pdf_brdf; // w*
+
+            color Le = eval_emission(nh.mat, nh.u, nh.v, tex_manager);
+            color sample_brdf_contrib = w * Le * fr * cos_theta / pdf_brdf;
+            // color sample_brdf_contrib = w * nh.mat.emission * fr * cos_theta / pdf_brdf; // w* FOR BRDF ONLY VISUALIZATION
             sum_brdf_full += sample_brdf_contrib;
 
             // --- BRANCH A PATH DIAGNOSTIC LOGGING ---
@@ -2011,22 +1832,22 @@ color camera::guided_rec_trace(
         // Processing Branch B: Secondary ray bounces deeper into scene graph
         else
         {
-            child = guided_rec_trace(new_ray, bvh_tree, depth + 1, lights, tex_manager, grid, use_path_guiding, current_path_history);
+            child = guided_rec_trace(new_ray, bvh_tree, depth + 1, lights, tex_manager, grid, use_path_guiding, current_path_history, current_alpha);
             color contrib = fr * cos_theta / pdf_brdf;
             color sample_indirect_contrib = rr_weight * child * contrib;
             sum_brdf_full += sample_indirect_contrib;
 
             /* if (depth == 0)
-            {
-                if (child.length() <= 0)
-                    timedOut++;
-                else
-                {
-                    indirectHits++;
-                    if (sample_was_guided)
-                        guidedHits++;
-                }
-            } */
+           {
+               if (child.length() <= 0)
+                   timedOut++;
+               else
+               {
+                   indirectHits++;
+                   if (sample_was_guided)
+                       guidedHits++;
+               }
+           } */
 
             // --- BRANCH B PATH DIAGNOSTIC LOGGING ---
             // Guarded with depth == 0 to keep tracing layers clean and eliminate coordinate clones
@@ -2068,7 +1889,8 @@ color camera::guided_rec_trace(
         }
 
         // --- CHOOSE WHAT TO RECORD ---
-        color incoming_radiance(0, 0, 0);
+        // OLD RECORDING
+        /* color incoming_radiance(0, 0, 0);
         if (nh.mat.is_emissive())
         {
             // Record the raw emission of the light hit along direction wo
@@ -2083,6 +1905,32 @@ color camera::guided_rec_trace(
         if (grid.is_training && incoming_radiance.length() > 0.0f)
         {
             grid.record_radiance(hi.p, wo, incoming_radiance); // TODO multithreading race conditions?
+        } */
+
+        // NEW RECORDING
+        color incoming_radiance =
+            nh.mat.is_emissive() ? nh.mat.emission : child;
+
+        if (grid.is_training &&
+            incoming_radiance.length() > 0.0f &&
+            pdf_brdf > 1e-8f)
+        {
+            // Estimate the directional contribution.
+            color guiding_contribution =
+                fr * incoming_radiance * cos_theta;
+
+            // Correct for the probability used to sample wo.
+            color guiding_weighted =
+                guiding_contribution / pdf_brdf;
+
+            if (guiding_weighted.length() > 0.0f)
+            {
+#pragma omp critical(grid_record_lock)
+                {
+                    grid.record_radiance(
+                        hi.p, wo, guiding_weighted);
+                }
+            }
         }
     }
 
@@ -2119,15 +1967,424 @@ color camera::guided_rec_trace(
     return final_pixel_color;
 }
 
-// Split ray-color
-color camera::divided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
+color camera::guided_rec_trace_HASH(
+    const ray &r,
+    const bvh &bvh_tree,
+    int depth,
+    std::vector<area_light> &lights,
+    TextureManager &tex_manager,
+    SpatialHashGrid &grid, // SpatialHashGrid
+    SpatialHashGrid &grid2,
+    bool use_path_guiding,
+    std::vector<point3> path_history,
+    float current_alpha)
 {
-    if (depth <= 0)
+    const float eps = 1e-4f;
+    if (depth >= MAX_DEPTH)
+    {
+        return color(0, 0, 0);
+    }
+
+    // 1. Scene Intersection Check
+    hit_info hi;
+    if (!bvh_tree.hit(r, eps, FLT_MAX, hi))
+    {
+        if (depth == 0)
+            misses++;
+        return color(0, 0, 0);
+    }
+
+    // ====================================================
+    // DIAGNOSTIC PRINT (PLACE HERE)
+    // ====================================================
+    /* if (depth == 0)
+    {
+#pragma omp critical(hash_debug)
+        {
+            static int debug_count = 0;
+            if (debug_count < 10)
+            {
+                uint64_t key_rec = grid.hash_position(hi.p, grid.voxel_size);
+                uint64_t key_read = grid.hash_position(hi.p + hi.normal * 1e-3f, grid.voxel_size);
+
+                std::cout << "[DEBUG] Hit P: " << hi.p.x() << ", " << hi.p.y() << ", " << hi.p.z()
+                          << " | Key Rec: " << key_rec
+                          << " | Key Read: " << key_read
+                          << " | Map Size: " << grid.get_size() << std::endl;
+                debug_count++;
+            }
+        }
+    }*/
+
+    // 2. Emissive Check (Direct Hit)
+    if (hi.mat.is_emissive())
+    {
+        if (depth == 0)
+            directHits++;
+
+        return hi.mat.emission; // eval emission (texture)
+    }
+
+    // 3. Normal Setup and Geometry Alignment
+    vec3 N = unit_vector(hi.normal);
+    vec3 dir_in = unit_vector(r.direction());
+    bool front_face = dot(dir_in, N) < 0.0f;
+    vec3 n = front_face ? N : -N;
+
+    vec3 wi = -dir_in;
+    vec3 refl_dir = reflect(dir_in, n);
+    float s = hi.mat.spec_exponent;
+
+    std::vector<float> local_probs = compute_local_light_weights(hi.p, n, lights);
+
+    // === PERFECT GLASS / DIELECTRIC ===
+    if (hi.mat.transparency > 1e-6f)
+    {
+        float n1 = front_face ? 1.0f : hi.mat.ior;
+        float n2 = front_face ? hi.mat.ior : 1.0f;
+        float eta_ratio = n1 / n2;
+        float cos_theta = std::min(dot(-dir_in, n), 1.0f);
+        if (cos_theta <= 0.0f)
+            return color(0, 0, 0);
+
+        float R = fresnel_schlick(cos_theta, n1, n2);
+        vec3 refr_dir, spec_refl_dir;
+        spec_refl_dir = reflect(dir_in, n);
+
+        bool can_refract = refract(dir_in, n, eta_ratio, refr_dir);
+
+        ray refl_ray(hi.p + spec_refl_dir * eps, spec_refl_dir);
+        color col_refl = guided_rec_trace_HASH(refl_ray, bvh_tree, depth + 1, lights, tex_manager, grid, grid, use_path_guiding, std::vector<point3>(), current_alpha);
+
+        if (!can_refract)
+            return col_refl;
+
+        ray refr_ray(hi.p + refr_dir * eps, refr_dir);
+        color col_refr = guided_rec_trace_HASH(refr_ray, bvh_tree, depth + 1, lights, tex_manager, grid, grid, use_path_guiding, std::vector<point3>(), current_alpha);
+
+        return R * col_refl + (1.0f - R) * col_refr;
+    }
+
+    // === PERFECT MIRROR DELTA LAYER ===
+    if (hi.mat.is_delta_specular)
+    {
+        color fr = hi.mat.specular;
+        ray new_ray(hi.p + refl_dir * eps, refl_dir);
+        return guided_rec_trace_HASH(new_ray, bvh_tree, depth + 1, lights, tex_manager, grid, grid, use_path_guiding, std::vector<point3>(), current_alpha) * fr;
+    }
+
+    int light_samples = 1;
+    int brdf_samples = 1;
+
+    float SPEC_PROB = luminance(hi.mat.specular);
+    float DIFF_PROB = 1.0f - SPEC_PROB;
+
+    std::vector<point3> current_path_history = path_history;
+    current_path_history.push_back(hi.p);
+
+    float alpha = use_path_guiding ? current_alpha : 0.0f; // ALPHA
+
+    // Retrieve thread-safe const Voxel pointer
+    const Voxel *voxel = grid.get_voxel_const(hi.p, n);
+
+    // ====================================================
+    // 2) NEXT EVENT ESTIMATION (DIRECT LIGHTING LOOP)
+    // ====================================================
+    color sum_light(0, 0, 0);
+    if (!lights.empty())
+    {
+        int chosen_id = 0;
+        float selected_weight = 1.0f;
+        const area_light &L = sample_multiple_AL(lights, local_probs, selected_weight, chosen_id);
+
+        int grid_dim = static_cast<int>(std::sqrt(light_samples));
+        int total_actual_samples = grid_dim * grid_dim;
+        std::vector<light_sample> pts;
+        pts.reserve(total_actual_samples);
+
+        for (int y = 0; y < grid_dim; y++)
+        {
+            for (int x = 0; x < grid_dim; x++)
+            {
+                float r1 = (static_cast<float>(x) + rand_float()) / static_cast<float>(grid_dim);
+                float r2 = (static_cast<float>(y) + rand_float()) / static_cast<float>(grid_dim);
+
+                light_sample sample_data;
+                vec3 sampled_uv;
+                sample_data.p = sample_stratified(sample_data.normal, L, sample_data.pdf_area, r1, r2, sampled_uv, sample_data.mat);
+                sample_data.u = sampled_uv.x();
+                sample_data.v = sampled_uv.y();
+                pts.push_back(sample_data);
+            }
+        }
+
+        for (const light_sample &ls : pts)
+        {
+            vec3 Lvec = ls.p - hi.p;
+            float dist_squared = Lvec.length_squared();
+            float dist = std::sqrt(dist_squared);
+            vec3 wo = Lvec / dist;
+
+            float cos_s = dot(n, wo);
+            float cos_l = dot(ls.normal, -wo);
+
+            if (cos_s <= 0 || cos_l <= 0)
+                continue;
+
+            cos_s = std::min(cos_s, 1.0f);
+            cos_l = std::min(cos_l, 1.0f);
+
+            if (!visible(hi.p + wo * eps, ls.p, bvh_tree))
+                continue;
+
+            float pdf_light = (dist_squared / cos_l) * ls.pdf_area;
+            float pdf_light_new = pdf_light * selected_weight;
+
+            color f_diffuse = tex_base_color(hi, tex_manager) / M_PI;
+            color f_specular = brdf_specular(hi.mat, s, refl_dir, wo);
+            color fr = f_diffuse * DIFF_PROB + f_specular * SPEC_PROB;
+
+            float phong_pdf = (s + 2.0f) * std::pow(std::max(dot(refl_dir, wo), 0.0f), s) / (2.0f * M_PI);
+            float pdf_brdf_pure = SPEC_PROB * phong_pdf + DIFF_PROB * (cos_s / M_PI);
+
+            float pdf_final_eval = pdf_brdf_pure;
+            if (use_path_guiding)
+            {
+                float pdf_guided = (voxel && voxel->use_quadtree)
+                                       ? grid.get_guided_pdf_QT(hi.p, n, wo)
+                                       : (voxel ? grid.get_guided_pdf(hi.p, n, wo) : dot(wo, n) / M_PI);
+
+                pdf_final_eval = alpha * pdf_guided + (1.0f - alpha) * pdf_brdf_pure;
+            }
+
+            float w = power_heuristic(pdf_light_new, pdf_final_eval);
+            color sample_nee_contrib = (w * fr * cos_s * L.emission / pdf_light_new);
+            sum_light += sample_nee_contrib;
+
+            // NEE TRAINING
+            // 1) pure incoming radiance -> distribution influenced by both radiance and the sampling strategy
+            // color guiding_value = L.emission;
+
+            // 2) importance weighted -> incoming-radiance distribution
+            // color guiding_value = L.emission / pdf_light_new;
+
+            // 3) full contribution -> rendering-equation integrand
+            color guiding_value = sample_nee_contrib;
+
+            // rendering contribution
+            if (grid.is_training)
+            {
+#pragma omp critical(grid_record_lock)
+                {
+                    Voxel &mut_voxel = grid.get_voxel(hi.p, n);
+
+                    if (mut_voxel.use_quadtree)
+                        grid.record_radiance_QT(hi.p, n, wo, guiding_value);
+                    else
+                        grid.record_radiance(hi.p, n, wo, guiding_value);
+                }
+            }
+
+            if (light_samples > 1)
+                sum_light /= float(light_samples);
+        }
+    }
+
+    // ====================================================
+    // 3) BRDF & PATH GUIDED SAMPLING LOOP
+    // ====================================================
+    color sum_brdf_full(0, 0, 0);
+    vec3 wo;
+    float pdf_guided = 0.0f;
+    float pdf_brdf = 0.0f;
+    bool sample_was_guided = false;
+
+    if (use_path_guiding && rand_float() < alpha)
+    {
+        sample_was_guided = true;
+
+        // --- STEP 1: SAMPLE DIRECTION ---
+        if (voxel)
+        {
+            if (voxel->use_quadtree)
+            {
+                wo = grid.sample_guided_direction_QT(hi.p, n, pdf_guided);
+
+                float pdf_eval = grid.get_guided_pdf_QT(hi.p, n, wo);
+
+                if (std::abs(pdf_guided - pdf_eval) > 1e-2f) // FIX
+                {
+                    std::cout << "QT PDF MISMATCH" << "\n"
+                              << "pdf_guided: " << pdf_guided << ", pdf_eval: " << pdf_eval << std::endl;
+                    std::exit(1);
+                }
+            }
+            else
+            {
+                wo = grid.sample_guided_direction(hi.p, n, pdf_guided);
+
+                float pdf_eval = grid.get_guided_pdf(hi.p, n, wo);
+                if (std::abs(pdf_guided - pdf_eval) > 1e-2f)
+                {
+                    std::cout << "BIN PDF MISMATCH" << "\n"
+                              << "pdf_guided: " << pdf_guided << ", pdf_eval: " << pdf_eval << std::endl;
+                }
+            }
+        }
+        else
+        {
+            // Fallback when no voxel exists at hit point
+            wo = sample_cosine_hemisphere(n); // Ensure this also sets pdf_guided!
+            pdf_guided = dot(wo, n) / M_PI;   // Cosine-weighted PDF
+        }
+    }
+    else
+    {
+        if (rand_float() < SPEC_PROB)
+            wo = sample_phong_lobe(refl_dir, n, s, pdf_guided);
+        else
+            wo = sample_cosine_hemisphere(n);
+
+        if (use_path_guiding)
+        {
+            pdf_guided = (voxel && voxel->use_quadtree)
+                             ? grid.get_guided_pdf_QT(hi.p, n, wo)
+                             : (voxel ? grid.get_guided_pdf(hi.p, n, wo) : std::max(0.0f, dot(wo, n)) / M_PI); // cosine weighted
+        }
+    }
+
+    float cos_theta = std::max(0.0f, dot(wo, n));
+    if (cos_theta > 0.0f)
+    {
+        float cos_r = std::max(0.0f, dot(refl_dir, wo));
+        float pdf_diff_pure = cos_theta / M_PI;
+        float pdf_spec_pure = (s + 2.0f) * std::pow(cos_r, s) / (2.0f * M_PI);
+        float pdf_material_total = SPEC_PROB * pdf_spec_pure + DIFF_PROB * pdf_diff_pure;
+
+        pdf_brdf = use_path_guiding ? (alpha * pdf_guided + (1.0f - alpha) * pdf_material_total) : pdf_material_total;
+
+        if (pdf_brdf > 0.0f)
+        {
+            color f_diffuse = tex_base_color(hi, tex_manager) / M_PI;
+            color f_specular = brdf_specular(hi.mat, s, refl_dir, wo);
+            color fr = f_diffuse * DIFF_PROB + f_specular * SPEC_PROB;
+
+            ray new_ray(hi.p + wo * eps, wo);
+            hit_info nh;
+
+            if (bvh_tree.hit(new_ray, eps, FLT_MAX, nh))
+            {
+
+                // --- DIAGNOSTIC TEST POINT LOCK-ON ---
+                if (depth == 0 && test_point.length() <= 1e-4f)
+                {
+                    if (!nh.mat.is_emissive())
+                    {
+                        test_point = nh.p;
+                        test_point_normal = nh.normal;
+                        std::cout << "--> Diagnostic Lock: test_point pinned at " << test_point << std::endl;
+                    }
+                }
+
+                color child(0, 0, 0);
+                float w = 0.0f;
+
+                if (nh.mat.is_emissive())
+                {
+                    const area_light &L = lights[nh.mat.light_id];
+                    float dist = (nh.p - hi.p).length();
+                    float cos_l = std::max(0.0f, dot(L.normal, -wo));
+
+                    if (cos_l > 0.0f)
+                    {
+                        // float pdf_light = (dist * dist / cos_l) / L.area;
+                        // float w = power_heuristic(pdf_brdf, pdf_light);
+                        float pdf_light =
+                            (dist * dist / cos_l) / L.area;
+
+                        float pdf_light_new =
+                            pdf_light * local_probs[nh.mat.light_id];
+
+                        w = power_heuristic(pdf_brdf, pdf_light_new);
+
+                        sum_brdf_full = w * nh.mat.emission * fr * cos_theta / pdf_brdf;
+                    }
+                }
+                else
+                {
+                    child = guided_rec_trace_HASH(new_ray, bvh_tree, depth + 1, lights, tex_manager, grid, grid2, use_path_guiding, path_history, current_alpha);
+                    sum_brdf_full = child * fr * cos_theta / pdf_brdf;
+                }
+
+                // Training Pass: Thread-safe recording
+                color incoming_radiance = nh.mat.is_emissive() ? w * nh.mat.emission : child;
+
+                // 1
+                // color guiding_value = incoming_radiance;
+
+                // 2
+                // color guiding_value = incoming_radiance / pdf_brdf;
+
+                // 3
+                color guiding_value = fr * incoming_radiance * cos_theta / pdf_brdf;
+
+                if (grid.is_training && incoming_radiance.length() > 0.0f && pdf_brdf > 1e-8f)
+                {
+#pragma omp critical(grid_record_lock)
+                    {
+                        Voxel &mut_voxel = grid.get_voxel(hi.p, n); // Safe non-const allocation under critical
+                        if (mut_voxel.use_quadtree)
+                        {
+                            grid.record_radiance_QT(hi.p, n, wo, guiding_value);
+                        }
+                        else
+                            grid.record_radiance(hi.p, n, wo, guiding_value);
+                    }
+                }
+            }
+        }
+    }
+
+    if (brdf_samples > 1)
+        sum_brdf_full /= float(brdf_samples);
+
+    color final_pixel_color = (sum_light + sum_brdf_full);
+
+    if (depth == 0)
+    {
+
+        if (final_pixel_color.length() <= 1e-5f)
+        {
+            timedOut++;
+        }
+        else
+        {
+            if (sum_brdf_full.length() > 0.0f || sum_light.length() > 0.0f)
+                indirectHits++;
+            if (sum_brdf_full.length() == 0.0f)
+                neeHits++;
+            else
+                brdfHits++;
+            if (sample_was_guided)
+
+                guidedHits++;
+        }
+    }
+
+    return final_pixel_color;
+}
+
+// Split ray-color
+color camera::divided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, TextureManager &tex_manager, VoxelGrid &grid, bool use_guiding)
+{
+    if (depth >= MAX_DEPTH)
         return color(0, 0, 0);
 
+    // small offset
+    const float eps = 1e-4f;
     // --- intersect
     hit_info hi;
-    if (!bvh_tree.hit(r, 1e-10f, FLT_MAX, hi))
+    if (!bvh_tree.hit(r, eps, FLT_MAX, hi))
         return color(0, 0, 0);
 
     // --- emitter (if we hit an emitter, return emission directly)
@@ -2138,15 +2395,19 @@ color camera::divided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, st
         return Le;
     }
 
-    // small offset
-    const float eps = 1e-4f;
-
-    // vectors
+    // Normal Setup and Geometry Alignment
     vec3 N = unit_vector(hi.normal);
     vec3 dir_in = unit_vector(r.direction());
-    vec3 wi = -dir_in;
     bool front_face = dot(dir_in, N) < 0.0f;
     vec3 n = front_face ? N : -N;
+
+    vec3 wi = -dir_in;
+    vec3 refl_dir = reflect(dir_in, n);
+    float s = hi.mat.spec_exponent;
+
+    // Precompute spatial light probabilities for multi-light selection
+    std::vector<float> local_probs = compute_local_light_weights(hi.p, n, lights);
+    float alpha = 0.5f;
 
     /* if (hi.mat.flag == 3) // mirror
     {
@@ -2157,95 +2418,142 @@ color camera::divided_rec_trace(const ray &r, const bvh &bvh_tree, int depth, st
         return recursion_transparent(dir_in, N, hi, bvh_tree, depth, lights);
     } */
 
-    return Le + next_event_estimation(wi, n, hi, bvh_tree, depth - 1, lights) + indirect_illumination(wi, n, hi, bvh_tree, depth - 1, lights);
+    return Le +
+           next_event_estimation(wi, n, hi, bvh_tree, depth + 1, lights, local_probs, tex_manager, grid, alpha, use_guiding) + indirect_illumination(wi, n, hi, bvh_tree, depth + 1, lights, local_probs, tex_manager, grid, alpha, use_guiding);
 }
 
-color camera::next_event_estimation(const vec3 &wi, const vec3 &N, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
+color camera::next_event_estimation(const vec3 &wi, const vec3 &n, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, std::vector<float> local_probs, TextureManager &tex_manager, VoxelGrid &grid, float alpha, bool use_guiding)
 {
     color L(0, 0, 0);
+    if (!lights.empty())
+    {
+        // choose area light based on probs
+        int chosen_id = 0;
+        float selected_weight = 1.0f;
+        const area_light &light = sample_multiple_AL(lights, local_probs, selected_weight, chosen_id);
 
-    // sample area light
-    float light_area = std::max(lights[0].area, 1e-8f);
-    vec3 sample_pos = sample_area_light(lights[0]);
-    const vec3 n_light = unit_vector(lights[0].normal);
+        // sample point on chosen area light
+        vec3 n_light;
+        float pdf_light_area;
+        point3 sample_pos = sample(n_light, light, pdf_light_area);
 
-    // vector to light point
-    vec3 Lvec = (sample_pos - hit.p);
-    float dist = Lvec.length();
-    vec3 wo = Lvec / dist;
+        // vector to light point
+        vec3 Lvec = (sample_pos - hit.p);
+        float dist = Lvec.length();
+        float dist_squared = Lvec.length_squared();
+        vec3 wo = Lvec / dist;
 
-    float cos_on_s = std::min(1.0f, dot(N, wo));               // cos between face normal and ray from light source
-    float cos_on_l = std::min(1.0f, dot(n_light, wo * -1.0f)); // cos between light normal and ray from light source
+        float cos_on_s = std::min(1.0f, dot(n, wo));        // cos between face normal and ray from light source
+        float cos_on_l = std::min(1.0f, dot(n_light, -wo)); // cos between light normal and ray from light source
 
-    if (cos_on_s <= 0 || cos_on_l <= 0)
-        return L;
+        if (cos_on_s <= 0 || cos_on_l <= 0)
+            return L;
 
-    // ray r_from_light(sampled_point + 1e-04f * n_light, wi);
+        // ray r_from_light(sampled_point + 1e-04f * n_light, wi);
+        // shadow test
+        if (!visible(hit.p + wo * 1e-04f, sample_pos, bvh_tree)) // check!
+            return L;
 
-    // shadow test
-    if (!visible(hit.p + wo * 1e-04f, sample_pos, bvh_tree)) // check!
-        return L;
+        // light pdf
+        float pdf_light = (dist_squared / cos_on_l) * pdf_light_area;
+        float pdf_light_new = pdf_light * selected_weight;
 
-    float pdf_light = (dist * dist) / (cos_on_l * light_area);
+        // material pdf and brdf
+        float pdf_bsdf = 0.0f;
+        bool is_delta = false;
+        color fr = eval_bsdf(hit.mat, hit.p, n, wi, wo, pdf_bsdf, is_delta);
 
-    float pdf_bsdf = 0.0f;
-    bool is_delta = false;
+        // guiding
+        float pdf_final = pdf_bsdf;
+        if (use_guiding)
+        {
+            float pdf_guided = grid.get_guided_pdf(hit.p, n, wo);
+            pdf_final = alpha * pdf_guided + (1.0f - alpha) * pdf_bsdf;
+        }
 
-    color fr = eval_bsdf(hit.mat, hit.p, N, wi, wo, pdf_bsdf, is_delta);
+        if (pdf_final <= 0.0f)
+            return L;
 
-    if (pdf_bsdf <= 0.0f)
-        return L;
-
-    float mis_weight = (pdf_light) / (pdf_bsdf + (pdf_light));
-    return fr * mis_weight * cos_on_s * lights[0].emission / pdf_light;
+        float mis_weight = (pdf_light_new) / (pdf_final + (pdf_light_new));
+        return (fr * mis_weight * cos_on_s * light.emission) / pdf_light_new;
+    }
+    return L;
 }
 
-color camera::indirect_illumination(const vec3 &wi, const vec3 &N, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
+color camera::indirect_illumination(const vec3 &wi, const vec3 &n, const hit_info &hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, std::vector<float> local_probs, TextureManager &tex_manager, VoxelGrid &grid, float alpha, bool use_guiding)
 {
+    float SPEC_PROB = luminance(hit.mat.specular);
+    float DIFF_PROB = 1.0f - SPEC_PROB;
+    vec3 refl_dir = reflect(-wi, n);
+    float s = hit.mat.spec_exponent;
+
     bool is_delta = false;
     float pdf_bsdf = 0.0f;
+    color fr;
 
-    vec3 wo = sample_from_bsdf(wi, N, hit.mat);
+    float pdf_guided;
+    float pdf_material_total;
+    vec3 wo;
+    if (use_guiding)
+    {
+        if (rand_float() < alpha)
+        {
+            wo = grid.sample_guided_direction(hit.p, n, pdf_guided); // interpolation? (2)
+        }
+        else
+        {
+            wo = sample_from_bsdf(wi, n, hit.mat);
 
-    float cos_wo = std::max(0.0f, dot(wo, N));
+            pdf_guided = grid.get_guided_pdf(hit.p, n, wo); // interpolation? (3)
+        }
 
-    color fr = eval_bsdf(hit.mat, hit.p, N, wi, wo, pdf_bsdf, is_delta);
+        fr = eval_bsdf(hit.mat, hit.p, n, wi, wo, pdf_material_total, is_delta);
 
-    if (pdf_bsdf <= 0.0f)
+        pdf_bsdf = alpha * pdf_guided + (1.0f - alpha) * pdf_material_total;
+    }
+    else
+    {
+        wo = sample_from_bsdf(wi, n, hit.mat);
+        fr = eval_bsdf(hit.mat, hit.p, n, wi, wo, pdf_bsdf, is_delta);
+    }
+
+    float cos_theta = std::max(0.0f, dot(wo, n));
+    if (pdf_bsdf <= 0.0f || cos_theta <= 0.0f)
         return color(0, 0, 0);
 
     vec3 sample_origin = hit.p + 1e-04f * wo;
     ray sample_ray(sample_origin, wo);
 
     hit_info next_hit;
-    bool bang = bvh_tree.hit(sample_ray, 1e-04f, FLT_MAX, next_hit);
-
-    if (!next_hit.mat.is_emissive())
+    if (!bvh_tree.hit(sample_ray, 1e-04f, FLT_MAX, next_hit))
     {
-        color Li = divided_rec_trace(sample_ray, bvh_tree, depth - 1, lights);
-        return Li * (fr * cos_wo / pdf_bsdf);
+        return color(0, 0, 0);
+    }
+
+    color child(0, 0, 0);
+    if (next_hit.mat.is_emissive())
+    {
+        const area_light &L = lights[next_hit.mat.light_id];
+        float dist = (next_hit.p - hit.p).length();
+        float cos_l = std::max(0.0f, dot(L.normal, -wo));
+        if (cos_l <= 0.0f)
+            return color(0, 0, 0);
+
+        float pdf_light = (dist * dist / cos_l) / L.area;
+        float pdf_light_new = pdf_light * local_probs[next_hit.mat.light_id];
+
+        // std::cout << "checkpoint brdf1" << std::endl;
+
+        float w = power_heuristic(pdf_bsdf, pdf_light_new);
+        return w * next_hit.mat.emission * fr * cos_theta / pdf_bsdf; // w*
     }
 
     else
     {
-        color Li = lights[0].emission;
-        float area = lights[0].area;
-        float pdf_light = 1.0f / area;
-
-        vec3 light_pos = next_hit.p;
-        vec3 n_light = lights[0].normal; // sample point
-
-        float distance2 = (light_pos - sample_origin).length_squared(); // ^2?
-
-        float cos_light = std::max(0.0f, dot(n_light, wo * -1.0f));
-        if (cos_light <= 0.0f)
-            return color(0, 0, 0);
-
-        pdf_light = pdf_light * distance2 / cos_light;
-
-        float mis_weight = pdf_bsdf / (pdf_bsdf + pdf_light);
-
-        return Li * fr * cos_wo * mis_weight / pdf_bsdf;
+        // std::cout << "checkpoint brdf2" << std::endl;
+        child = divided_rec_trace(sample_ray, bvh_tree, depth + 1, lights, tex_manager, grid, use_guiding);
+        color contrib = fr * cos_theta / pdf_bsdf;
+        return child * contrib;
     }
 }
 
@@ -2253,20 +2561,20 @@ color camera::eval_bsdf(const material &m, const vec3 &p, const vec3 &n, const v
 {
     color shading;
 
-    float cosI = std::max(0.0f, dot(n, wi));
+    float cos_i = std::max(0.0f, dot(n, wi));
 
     switch (m.flag)
     {
-    case 1:
+    case 1: // full diffuse
     {
         color diff = m.diffuse / M_PI;
         shading = diff;
-        pdf_factor = cosI / M_PI;
+        pdf_factor = cos_i / M_PI;
         is_delta = false;
         break;
     }
 
-    case 2:
+    case 2: // glossy
     {
         float s = m.spec_exponent;
 
@@ -2275,90 +2583,80 @@ color camera::eval_bsdf(const material &m, const vec3 &p, const vec3 &n, const v
 
         // Phong specular BRDF
         vec3 r = unit_vector(reflect(wo, n)); // or wo.reflect(n) depending on your convention
-        float roi = std::max(0.0f, dot(r, wi));
+        float cos_ir = std::max(0.0f, dot(r, wi));
 
-        color spec = m.specular * ((s + 2.0f) / (2.0f * M_PI)) * std::pow(roi, s);
+        color spec = m.specular * ((s + 2.0f) / (2.0f * M_PI)) * std::pow(cos_ir, s);
         // Full BRDF is sum of lobes
         shading = (diff + spec) * 0.5;
 
         // PDFs for each lobe
-        float diff_factor = cosI / M_PI;
-        float spec_factor = (s + 1.0f) * std::pow(roi, s) / (2.0f * M_PI);
-        // Sampling weights (example: based on energy)
-        float Ed = 0.5;
-        float Es = 0.5;
-        float sum = Ed + Es;
-        float wd = (sum > 0.0f) ? Ed / sum : 0.5f;
-        float ws = (sum > 0.0f) ? Es / sum : 0.5f;
-
-        pdf_factor = wd * diff_factor + ws * spec_factor;
+        float diff_factor = cos_i / M_PI;
+        float spec_factor = (s + 1.0f) * std::pow(cos_ir, s) / (2.0f * M_PI);
+        // Sampling weights
+        float SPEC_PROB = luminance(m.specular);
+        float DIFF_PROB = 1.0f - SPEC_PROB;
+        pdf_factor = DIFF_PROB * diff_factor + SPEC_PROB * spec_factor;
         is_delta = false;
         break;
     }
 
-    case 3:
-        // handled elsewhere via delta reflection/refraction
+    case 3: // delta
         pdf_factor = 0.0f;
-        is_delta = true; // here it *is* delta
+        is_delta = true;
         break;
 
-    default:
-        /* shading = color(1, 1, 1);
-        pdf_factor = 0.0f;
+    default: // diffuse
+        color diff = m.diffuse / M_PI;
+        shading = diff;
+        float cos_wo = std::max(0.0f, dot(n, wo));
+        pdf_factor = cos_wo / M_PI; // Use outgoing angle!
         is_delta = false;
-        break; */
-
-        // TODO
-        vec3 refl_dir = reflect(wi * -1.0f, n);
-        float s = m.spec_exponent;
-        float SPEC_PROB = m.specular_prob;
-        float DIFF_PROB = 1 - SPEC_PROB;
-        color fr = brdf_diffuse(m) + brdf_specular(m, s, refl_dir, wo);
-        float phong_pdf = (s + 2.0f) * std::pow(std::max(dot(refl_dir, wo), 0.0f), s) / (2.0f * M_PI);
-        pdf_factor = SPEC_PROB * phong_pdf + DIFF_PROB * (dot(n, wo) / M_PI);
-
-        shading = fr;
         break;
     }
 
     return shading;
 }
 
-vec3 camera::sample_from_bsdf(vec3 wi, vec3 N, material m)
+vec3 camera::sample_from_bsdf(const vec3 &wi, const vec3 &n, material m)
 {
     vec3 wo;
-    // return sample_cosine_hemisphere(N);
+
     switch (m.flag)
     {
-    case 1:
+    case 1: // diffuse
     {
-        wo = sample_cosine_hemisphere(N);
+        wo = sample_cosine_hemisphere(n);
     }
     break;
-    case 2:
+    case 2: // glossy
     {
         float k = rand_float();
         if (k < 0.5)
-            wo = phong_specular(N, wi, m.spec_exponent);
+        {
+            float dummy_pdf;
+            wo = sample_phong_lobe(n, wi, m.spec_exponent, dummy_pdf);
+        }
         else
-            wo = sample_cosine_hemisphere(N);
+            wo = sample_cosine_hemisphere(n);
     }
     break;
+
     default:
-        wo = sample_uniform_hemisphere(N);
+        wo = sample_cosine_hemisphere(n);
         break;
     }
+
     return wo;
 }
 
-color camera::recursion_mirror(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
+color camera::recursion_mirror(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, TextureManager &tex_manager, VoxelGrid &grid, bool use_guiding)
 {
     vec3 reflection_dir = reflect(I, N);
     ray reflection_ray(hit.p + 1e-04f * reflection_dir, reflection_dir);
-    return divided_rec_trace(reflection_ray, bvh_tree, depth - 1, lights);
+    return divided_rec_trace(reflection_ray, bvh_tree, depth - 1, lights, tex_manager, grid, use_guiding);
 }
 
-color camera::recursion_transparent(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights)
+color camera::recursion_transparent(vec3 I, vec3 N, hit_info hit, const bvh &bvh_tree, int depth, std::vector<area_light> &lights, TextureManager &tex_manager, VoxelGrid &grid, bool use_guiding)
 {
     bool front_face = dot(I, N) < 0.0f;
     vec3 n = front_face ? N : -N; // oriented shading normal (use this everywhere)
@@ -2389,14 +2687,14 @@ color camera::recursion_transparent(vec3 I, vec3 N, hit_info hit, const bvh &bvh
 
     // Reflection ray
     ray refl_ray(hit.p + refl_dir * 1e-04f, refl_dir);
-    color col_refl = divided_rec_trace(refl_ray, bvh_tree, depth - 1, lights);
+    color col_refl = divided_rec_trace(refl_ray, bvh_tree, depth - 1, lights, tex_manager, grid, use_guiding);
 
     if (!can_refract)
         return col_refl; // Total internal reflection
 
     // Refraction ray
     ray refr_ray(hit.p + refr_dir * 1e-04f, refr_dir);
-    color col_refr = divided_rec_trace(refr_ray, bvh_tree, depth - 1, lights);
+    color col_refr = divided_rec_trace(refr_ray, bvh_tree, depth - 1, lights, tex_manager, grid, use_guiding);
 
     // Mix reflection & refraction
     return R * col_refl + (1.0f - R) * col_refr;
@@ -2548,11 +2846,10 @@ color camera::oldest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
 
             float pdf_brdf = SPEC_PROB * phong_pdf + DIFF_PROB * (cos_s / M_PI); // NO MIS
 
-            // TODO MIS
-
+            // MIS
             float w = power_heuristic(pdf_light, pdf_brdf);       // or balance
             sum_light += w * fr * cos_s * L.emission / pdf_light; // w *
-            std::cout << "w: " << w << " fr: " << fr << " cos: " << cos_s << " emission: " << L.emission << " pdf: " << pdf_light << std::endl;
+            // std::cout << "w: " << w << " fr: " << fr << " cos: " << cos_s << " emission: " << L.emission << " pdf: " << pdf_light << std::endl;
         }
 
         if (light_samples > 1)
@@ -2671,17 +2968,182 @@ color camera::oldest_rec_trace(const ray &r, const bvh &bvh_tree, int depth, std
 }
 
 // Rendering
+
+void camera::timed_comparison_render(const std::vector<object> &world,
+                                     std::vector<area_light> &lights,
+                                     bvh &bvh_tree,
+                                     SpatialHashGrid &guiding_grid, // VoxelGrid, SpatialHashGrid
+                                     TextureManager &tex_manager,
+                                     double total_time_budget_seconds,
+                                     bool enable_guiding,
+                                     double training_time_budget_seconds) // 0 for non-guided
+{
+    initialize();
+    ErrorAnalyzer analyzer(image_width, image_height);
+
+    auto global_start = std::chrono::steady_clock::now();
+    int training_iterations = 0;
+    float current_alpha = 0.5f;
+
+    // =========================================================================
+    // PHASE 1: TRAINING (Only if guiding is enabled and budget > 0)
+    // =========================================================================
+    if (enable_guiding && training_time_budget_seconds > 0.0)
+    {
+        std::cout << "--> Starting Training Phase (Limit: " << training_time_budget_seconds << "s)...\n";
+
+        while (true)
+        {
+            auto now = std::chrono::steady_clock::now();
+            double elapsed_training = std::chrono::duration<double>(now - global_start).count();
+
+            // Stop training if we exceed the training budget OR total time budget
+            if (elapsed_training >= training_time_budget_seconds || elapsed_training >= total_time_budget_seconds)
+            {
+                break;
+            }
+
+            bool guiding_enabled = (training_iterations > 0);
+            int spp_per_pass = 1; // 1 SPP per training iteration for high-frequency updates
+            int N_train = 1;
+
+#pragma omp parallel for schedule(dynamic)
+            for (int j = 0; j < image_height; j++)
+            {
+                for (int i = 0; i < image_width; i++)
+                {
+                    float u = i + rand_double();
+                    float v = j + rand_double();
+                    point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
+                    ray r(camera_center, pixel_center - camera_center);
+
+                    // guided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding_enabled, {camera_center}, current_alpha);
+                    guided_rec_trace_HASH(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding_grid, guiding_enabled, {camera_center}, current_alpha);
+                }
+            }
+
+            guiding_grid.finalize_and_build_distributions_EMA(training_iterations); // EMA OR NOT
+            training_iterations++;
+
+            // QT Analysis
+            if (test_point.length() > 1e-4f)
+            {
+                std::string heatmap_name = "quadtree_heatmap_iter_" + std::to_string(training_iterations) + ".ppm";
+                guiding_grid.diagnose_test_voxel(test_point, test_point_normal, heatmap_name);
+            }
+
+            // Print training path counters
+            std::cout << "direct: " << directHits << " indirect: " << indirectHits << " misses: " << misses << " timeout: " << timedOut << std::endl;
+        }
+
+        std::cout << "Training completed: " << training_iterations << " iterations in "
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - global_start).count() << "s.\n";
+    }
+
+    // HashGrid Analysis
+    std::cout << "HashGrid: Size after training: " << guiding_grid.get_size() << std::endl;
+
+    // Freeze guiding for production
+    guiding_grid.is_training = false;
+
+    directHits = 0;
+    indirectHits = 0;
+    guidedHits = 0;
+    neeHits = 0;
+    brdfHits = 0;
+    misses = 0;
+    timedOut = 0;
+
+    // =========================================================================
+    // PHASE 2: PROGRESSIVE PRODUCTION RENDER (Consumes remaining time budget)
+    // =========================================================================
+    std::cout << "--> Starting Production Render Phase...\n";
+
+    std::vector<color> color_accumulator(image_width * image_height, color(0, 0, 0));
+    int production_spp = 0;
+
+    while (true)
+    {
+        auto now = std::chrono::steady_clock::now();
+        double elapsed_total = std::chrono::duration<double>(now - global_start).count();
+
+        // Stop if the overall time budget has expired
+        if (elapsed_total >= total_time_budget_seconds)
+        {
+            break;
+        }
+
+        guiding_grid.clear_accumulators(); // CLEAR QUADTREE/BINS (HashGrid) !
+#pragma omp parallel for schedule(dynamic)
+        for (int j = 0; j < image_height; j++)
+        {
+            for (int i = 0; i < image_width; i++)
+            {
+                float u = i + rand_double();
+                float v = j + rand_double();
+                point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
+                ray r(camera_center, pixel_center - camera_center);
+
+                // If guiding is disabled, pass 'false' and a dummy/uninitialized guiding grid if necessary
+                // color sample = guided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, enable_guiding, {camera_center}, current_alpha);
+                color sample = guided_rec_trace_HASH(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding_grid, enable_guiding, {camera_center}, current_alpha);
+
+                int idx = j * image_width + i;
+#pragma omp critical
+                {
+                    color_accumulator[idx] += sample;
+                    analyzer.add_pixel_sample(i, j, sample);
+                }
+            }
+        }
+
+        production_spp++;
+    }
+
+    // Average out the accumulated color samples by final production SPP achieved
+    std::vector<color> framebuffer(image_width * image_height);
+    for (size_t i = 0; i < color_accumulator.size(); ++i)
+    {
+        framebuffer[i] = (production_spp > 0) ? (color_accumulator[i] / float(production_spp)) : color(0, 0, 0);
+    }
+
+    double final_elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - global_start).count();
+    std::cout << "Done! Mode: " << (enable_guiding ? "Guided" : "Non-Guided")
+              << " | Training Iters: " << training_iterations
+              << " | Production SPP Reached: " << production_spp
+              << " | Total Time: " << final_elapsed << "s\n";
+
+    // production path numbers
+    std::cout << "direct: " << directHits << " indirect: " << indirectHits << " misses: " << misses << " timeout: " << timedOut << std::endl;
+
+    // Output and Analysis
+    std::string filename = enable_guiding ? "image_guided.ppm" : "image_unguided.ppm";
+    std::ofstream out(filename);
+    out << "P3\n"
+        << image_width << ' ' << image_height << "\n255\n";
+    for (const auto &c : framebuffer)
+        write_color(out, c);
+    out.close();
+
+    std::vector<color> image = analyzer.load_ppm(filename);
+    std::vector<color> groundtruth = analyzer.load_ppm("sibenik_GT1024.ppm");
+    float mse = analyzer.mse(image, groundtruth);
+    float psnr = analyzer.psnr(image, groundtruth);
+    float ssim = analyzer.ssim(image, groundtruth);
+    std::cout << "MSE = " << mse << ", PSNR = " << psnr << ", SSIM = " << ssim << "\n";
+}
+
 void camera::render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, VoxelGrid &guiding_grid, TextureManager &tex_manager)
 {
     initialize();
     std::vector<color> framebuffer(image_width * image_height);
 
-    // ErrorAnalyzer analyzer(image_width, image_height);
-    int spp = 9;
+    ErrorAnalyzer analyzer(image_width, image_height);
+    int spp = 1;
     int N = int(std::sqrt(spp));
-    bool guiding = false;
+    bool guiding = false; // no guiding!
 
-    // #pragma omp parallel for schedule(dynamic) // TODO threads
+#pragma omp parallel for schedule(dynamic) // TODO threads
     for (int j = 0; j < image_height; j++)
     {
         for (int i = 0; i < image_width; i++)
@@ -2713,28 +3175,29 @@ void camera::render(const std::vector<object> &world, std::vector<area_light> &l
                     ray r(camera_center, pixel_center - camera_center);
                     // color sample = nee_rec_trace(r, bvh_tree, 5, lights); // ,lights
                     // color sample = oldest_rec_trace(r, bvh_tree, 0, lights);
-                    color sample = newest_rec_trace(r, bvh_tree, 0, lights, tex_manager); // define recusion depth!, lights, throughput: color(1, 1, 1)
-                    //  color sample = guided_rec_trace(r, bvh_tree, 0, lights, guiding_grid, guiding);
+                    // color sample = newest_rec_trace(r, bvh_tree, 0, lights, tex_manager); // define recusion depth!, lights, throughput: color(1, 1, 1)
+                    color sample = guided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding, {camera_center}, 0);
 
-                    // color sample = divided_rec_trace(r, bvh_tree, 3, lights); TODO
+                    // color sample = divided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding); TODO
                     pixel_color += sample;
 
-                    // contribution analysis
-                    /* if (sample.length() > 0)
-                    {
-                        contributions++;
-                    }
-                    else
-                    {
-                        no_contribution++;
-                    } */
+// contribution analysis
+/* if (sample.length() > 0)
+{
+    contributions++;
+}
+else
+{
+    no_contribution++;
+} */
 
-                    // Error
-                    // #pragma omp critical
-                    // analyzer.add_pixel_sample(i, j, sample);
+// Error
+#pragma omp critical
+                    analyzer.add_pixel_sample(i, j, sample);
                 }
             }
             pixel_color /= float(N * N);
+
             framebuffer[j * image_width + i] = pixel_color;
         }
 
@@ -2751,17 +3214,18 @@ void camera::render(const std::vector<object> &world, std::vector<area_light> &l
         << image_width << ' ' << image_height << "\n255\n";
     for (const auto &c : framebuffer)
         write_color(out, c);
+
     out.close();
 
     // Error
-    /* std::vector<color> image = analyzer.load_ppm("image.ppm");
-    std::vector<color> groundtruth = analyzer.load_ppm("groundtruthDiffuse2500.ppm");
+    std::vector<color> image = analyzer.load_ppm("image.ppm");
+    std::vector<color> groundtruth = analyzer.load_ppm("ajar_GT1024.ppm"); // CHANGE GROUNDTRUTH
     float mse = analyzer.mse(image, groundtruth);
     float psnr = analyzer.psnr(image, groundtruth);
     float ssim = analyzer.ssim(image, groundtruth);
     std::cout << "MSE = " << mse << ", PSNR = " << psnr << ", SSIM = " << ssim << "\n";
     float noise = analyzer.compute_global_noise();
-    std::cout << "Image noise = " << noise << "\n"; */
+    std::cout << "Image noise = " << noise << "\n";
 }
 
 void camera::old_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree) // TODO area_light light_source
@@ -2812,23 +3276,192 @@ void camera::old_render(const std::vector<object> &world, std::vector<area_light
     out.close(); // close file
 }
 
-void camera::new_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, VoxelGrid &guiding_grid, TextureManager &tex_manager)
+// Quadtree diagnostic
+/* inline void run_quadtree_sampling_diagnostic()
+{
+    std::cout << "\n=============================================\n";
+    std::cout << "   QUADTREE SAMPLING & PDF CONSISTENCY TEST  \n";
+    std::cout << "=============================================\n";
+
+    DirectionalQuadtree test_dtree;
+
+    // 1. Record a concentrated "light source" in a known direction
+    vec3 target_dir = unit_vector(vec3(0.5f, 0.8f, 0.3f));
+    for (int i = 0; i < 1000; ++i)
+    {
+        test_dtree.record_radiance(target_dir, 10.0f);
+    }
+
+    // Build distribution with 5% exploration floor
+    test_dtree.build_distribution(0.05f);
+
+    int samples = 100000;
+    int nan_or_inf_count = 0;
+    int mismatches = 0;
+
+    // -------------------------------------------------------------
+    // TEST 1: PDF Consistency Check (sample_direction vs get_pdf)
+    // -------------------------------------------------------------
+    for (int i = 0; i < samples; ++i)
+    {
+        float u1 = rand_float();
+        float u2 = rand_float();
+
+        float sample_pdf = 0.0f;
+        vec3 sampled_dir = test_dtree.sample_direction(u1, u2, sample_pdf);
+
+        if (std::isnan(sample_pdf) || std::isinf(sample_pdf) || sample_pdf <= 0.0f)
+        {
+            nan_or_inf_count++;
+            continue;
+        }
+
+        float eval_pdf = test_dtree.get_pdf(sampled_dir);
+
+        if (std::abs(sample_pdf - eval_pdf) > 1e-3f)
+        {
+            mismatches++;
+        }
+    }
+
+    // -------------------------------------------------------------
+    // TEST 2: Numerical Integration over Sphere (Uniform Sampling)
+    // Integral = (1 / N) * SUM( get_pdf(uniform_dir) ) * (4 * PI)
+    // -------------------------------------------------------------
+    double uniform_pdf_sum = 0.0;
+    for (int i = 0; i < samples; ++i)
+    {
+        // Generate uniform random direction on sphere
+        float z = 1.0f - 2.0f * rand_float();
+        float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
+        float phi = 2.0f * M_PI * rand_float();
+        vec3 unif_dir(r * std::cos(phi), r * std::sin(phi), z);
+
+        uniform_pdf_sum += test_dtree.get_pdf(unif_dir);
+    }
+
+    double mean_pdf_uniform = uniform_pdf_sum / samples;
+    double sphere_integral = mean_pdf_uniform * (4.0 * M_PI);
+
+    std::cout << "NaN / Inf PDF Count: " << nan_or_inf_count << " (Target: 0)" << std::endl;
+    std::cout << "PDF Mismatch Count:  " << mismatches << " (Target: 0)" << std::endl;
+    std::cout << "Mean Evaluated PDF:  " << mean_pdf_uniform << " (Target: ~0.079577)" << std::endl;
+    std::cout << "Sphere Integral:     " << sphere_integral << " (Target: ~1.0)" << std::endl;
+    std::cout << "=============================================\n\n";
+}
+
+inline void test_isolated_leaf_sampling()
+{
+    DirectionalQuadtree tree;
+
+    // Choose a target UV inside the active yellow leaf
+    float u_target = 0.05f;
+    float v_target = 0.55f;
+
+    vec3 target_dir = tree.uv_to_dir(u_target, v_target);
+
+    // Record a single bright point or concentrated radiance
+    tree.record_radiance(target_dir, 100.0f);
+
+    constexpr int NUM_TEST_SAMPLES = 10000;
+    int samples_inside_leaf = 0;
+
+    // Define target leaf bounds [u0, u1] x [v0, v1] for verification
+    // (For depth 4 at that spot, width = 1 / 2^4 = 0.0625)
+    float u_min = 0.0000f, u_max = 0.0625f;
+    float v_min = 0.5000f, v_max = 0.5625f;
+
+    for (int i = 0; i < NUM_TEST_SAMPLES; ++i)
+    {
+        // 1. Draw 2 uniform random numbers in [0, 1)
+        float rx = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        float ry = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+
+        float out_pdf = 0.0f;
+        // 2. Pass random numbers (rx, ry) to select the direction
+        vec3 sampled_dir = tree.sample_direction(rx, ry, out_pdf);
+
+        // 3. Convert generated direction back to UV coordinates
+        float sample_u = 0.0f;
+        float sample_v = 0.0f;
+        tree.dir_to_uv(sampled_dir, sample_u, sample_v);
+
+        // 4. Check if sample lands inside the target leaf boundaries
+        if (sample_u >= u_min && sample_u <= u_max &&
+            sample_v >= v_min && sample_v <= v_max)
+        {
+            samples_inside_leaf++;
+        }
+    }
+
+    std::cout << "[TEST] Samples inside target leaf: "
+              << samples_inside_leaf << " / " << NUM_TEST_SAMPLES
+              << " (" << (100.0f * static_cast<float>(samples_inside_leaf) / NUM_TEST_SAMPLES) << "%)\n";
+}
+
+inline void test_pdf_integration(const DirectionalQuadtree &tree)
+{
+    constexpr int NUM_INTEGRAL_SAMPLES = 10000000;
+    double pdf_sum = 0.0;
+
+    for (int i = 0; i < NUM_INTEGRAL_SAMPLES; ++i)
+    {
+        // 1. Uniformly sample the UV domain [0, 1)^2
+        float u = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        float v = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+
+        // 2. Map to direction using EqualArea mapping
+        vec3 dir = tree.uv_to_dir(u, v);
+
+        // 3. Query PDF in steradians (sr^-1)
+        float pdf = tree.get_pdf(dir);
+
+        pdf_sum += static_cast<double>(pdf);
+    }
+
+    // Since mapping is equal-area, Integral = (4 * PI / N) * sum(pdf)
+    double total_integral = (4.0 * M_PI * pdf_sum) / static_cast<double>(NUM_INTEGRAL_SAMPLES);
+
+    std::cout << "[TEST] Integrated PDF over sphere: " << total_integral
+              << " (Expected: ~1.0000)" << std::endl;
+} */
+
+void camera::new_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, SpatialHashGrid &guiding_grid, TextureManager &tex_manager) // VoxelGrid/SpatialHashGrid
 {
     initialize();
+    ErrorAnalyzer analyzer(image_width, image_height);
+
+    // --- PHASE 1 DIAGNOSTIC TEST ---
 
     auto training_start = std::chrono::system_clock::now(); // training time
     // =========================================================================
     // MULTI-PASS PROGRESSIVE TRAINING LOOP
     // =========================================================================
-    int num_training_iterations = 1;
-    int samples_per_iteration = 9;
+    int num_training_iterations = 3;
+    int samples_per_iteration = 4;
+    // int production_spp = 100;
+
+    // Dynamic MIS alpha schedule:
+    // Starts low (e.g., 0.1) for heavy exploration, ramps up high for heavy exploitation
+    float min_alpha = 0.1f;
+    float max_alpha = 0.9f;
+    // Static alpha
+    float current_alpha = 0.5;
+
     int N_train = static_cast<int>(std::sqrt(samples_per_iteration));
+
+    // Create two grid instances
+    std::unique_ptr<SpatialHashGrid> sample_grid = std::make_unique<SpatialHashGrid>();
+    std::unique_ptr<SpatialHashGrid> record_grid = std::make_unique<SpatialHashGrid>();
 
     for (int iter = 0; iter < num_training_iterations; iter++)
     {
-        std::cout << "--> Starting Training Iteration " << (iter + 1)
-                  << "/" << num_training_iterations << "..." << std::endl;
+        guiding_grid.clear_accumulators(); // CLEAR QUADTREE/BINS (HashGrid) !
 
+        std::cout << "--> Starting Training Iteration " << (iter + 1) << "/" << num_training_iterations << "..." << std::endl;
+        bool guiding_enabled = (iter > 0);
+
+#pragma omp parallel for schedule(dynamic) // FIX parallelism for quadtree
         for (int j = 0; j < image_height; j++)
         {
             for (int i = 0; i < image_width; i++)
@@ -2840,50 +3473,85 @@ void camera::new_render(const std::vector<object> &world, std::vector<area_light
                         float u = i + (px + rand_double()) / N_train;
                         float v = j + (py + rand_double()) / N_train;
 
+                        // dynamic alpha
+                        // Calculate global progress across all training/production batches (ranges from 0.0 to 1.0)
+                        int total_batches = num_training_iterations * samples_per_iteration; // + production_spp; // TOTAL
+                        int current_batch = iter * samples_per_iteration + py * px;
+                        float progress = static_cast<float>(current_batch) / static_cast<float>(total_batches);
+                        // float current_alpha = min_alpha + (max_alpha - min_alpha) * progress;
+
                         point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
                         ray r(camera_center, pixel_center - camera_center);
 
-                        bool guiding_enabled = (iter > 0);
-
                         // SEED history with the camera center
-                        guided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding_enabled, {camera_center});
+                        // guided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding_enabled, {camera_center}, current_alpha);
+
+                        // guided_rec_trace_HASH(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding_enabled, {camera_center});
+
+                        guided_rec_trace_HASH(r, bvh_tree, 0, lights, tex_manager,
+                                              guiding_grid, guiding_grid, // *sample_grid, *record_grid,
+                                              guiding_enabled, {camera_center},
+                                              current_alpha); //  READ from sample_grid, WRITE to record_grid */
                     }
                 }
             }
         }
 
-        /* for (int i = 0; i < 8; i++)
-        {
-            for (int j = 0; j < 16; j++)
-            {
-                std::cout << "PDF (before) at row " << i << " and colomn " << j << " : " << guiding_grid.get_voxel(test_point).guiding_pdf[i][j] << std::endl;
-            }
-        } */
+        auto training_end = std::chrono::system_clock::now();
+        double training_time = std::chrono::duration<double>(training_end - training_start).count();
+        std::cout << "TRAINING ITERATION " << iter + 1 << " FINISHED in " << training_time << std::endl;
 
         std::cout << "    Baking distributions for iteration " << (iter + 1) << "..." << std::endl;
-        guiding_grid.finalize_and_build_distributions();
+        // record_grid->finalize_and_build_distributions();
+        guiding_grid.finalize_and_build_distributions_EMA(iter); // EMA
 
-        /* for (int i = 0; i < 8; i++)
+        // HashGrid Analysis
+        // std::cout << "HashGrid: Size after training: " << guiding_grid.get_size() << std::endl;
+
+        // SWAP pointers (Instant O(1) operation, no copying!)
+        // std::swap(sample_grid, record_grid);
+        // Clear the record_grid so it's fresh for the next iteration
+        // record_grid->clear();
+
+        // Quadtree diagnostic
+        /* const Voxel *vox = guiding_grid.get_voxel_const(test_point);
+        test_pdf_integration(vox->dtree);
+        guiding_grid.test_first_quadtree_consistency(); */
+
+        // Quadtree pdf heatmap
+        /* if (test_point.length() > 1e-4f)
         {
-            for (int j = 0; j < 16; j++)
-            {
-                std::cout << "PDF (after) at row " << i << " and colomn " << j << " : " << guiding_grid.get_voxel(test_point).guiding_pdf[i][j] << std::endl;
-            }
+            std::string heatmap_name = "quadtree_heatmap_iter_" + std::to_string(iter + 1) + ".ppm";
+            guiding_grid.diagnose_test_voxel(test_point, test_point_normal, heatmap_name);
         } */
 
-        std::string heatmap_name = "voxel_heatmap_iter_" + std::to_string(iter + 1) + ".ppm";
-        guiding_grid.export_voxel_heatmap_ppm(test_point, heatmap_name);
+        // Bins pdf numbers (after)
+        /* float max_bin_pdf = 0.0f;
+        for (int i = 0; i < BIN_ROWS; i++)
+        {
+            for (int j = 0; j < BIN_COLOMNS; j++)
+            {
+                float p = guiding_grid.get_voxel(test_point, test_point_normal).guiding_pdf[i][j]; // test_point_normal
+                max_bin_pdf = std::max(max_bin_pdf, p);
+                // std::cout << "PDF (after) at row " << i << " and colomn " << j << " : " << p << std::endl;
+            }
+        }
+        std::cout << "Fixed Bins Max PDF Element: " << max_bin_pdf << std::endl; */
 
-        std::cout << "guiding pdf (testpoint (0,0)): " << guiding_grid.get_voxel(test_point).guiding_pdf[0][0] << std::endl;
+        // Bins pdf heatmap
+        /* std::string heatmap_name = "voxel_heatmap_iter_" + std::to_string(iter + 1) + ".ppm";
+        guiding_grid.export_voxel_heatmap_ppm(test_point, heatmap_name);
+        std::cout << "guiding pdf (testpoint (0,0)): " << guiding_grid.get_voxel(test_point).guiding_pdf[0][0] << std::endl; */
+
+        // Print training path counters
         std::cout << "direct: " << directHits << " indirect: " << indirectHits << " misses: " << misses << " timeout: " << timedOut << std::endl;
     }
 
-    // VISUALIZATION
-    std::cout << "--> Exporting final trained 3D PDF Lobe mesh..." << std::endl;
-    // vec3 dummy_normal(0.0f, 1.0f, 0.0f);
-    // guiding_grid.export_raw_pdf_heatmap_sphere_to_ply("final_guiding_lobe.ply", test_point, guiding_grid);
+    // At the end, point your main grid to the trained result
+    // guiding_grid = std::move(*sample_grid);
 
-    float radius = 0.2f; // Scaled down so it sits nicely inside
+    // VISUALIZATION
+    /* float radius = 0.2f; // Scaled down so it sits nicely inside
     guiding_grid.g_debug_print_rays = true;
     guiding_grid.export_scene_with_heatmap_and_ray_bundle_to_ply(
         "debug_scene.ply",
@@ -2892,123 +3560,307 @@ void camera::new_render(const std::vector<object> &world, std::vector<area_light
         test_point_normal,
         radius,
         guiding_grid,
-        25);
-    guiding_grid.g_debug_print_rays = false;
+        20);
+    guiding_grid.g_debug_print_rays = false; */
 
-    auto training_end = std::chrono::system_clock::now();
-    double training_time = std::chrono::duration<double>(training_end - training_start).count();
-    std::cout << "TRAINING FINISHED in " << training_time << std::endl;
+    // TODO multiple production passes with same training
+    std::vector<int> production_passes = {1, 4, 16, 64, 100}; // 1,4,16,64,100
+    for (int s = 0; s < production_passes.size(); s++)
+    {
 
 // =========================================================================
 // RESET DIAGNOSTICS FOR PRODUCTION PASS ONLY
 // =========================================================================
 #pragma omp critical
-    {
-        g_heatmap_full_paths.clear(); // Wipe out training paths entirely
-    }
-    directHits = 0;
-    indirectHits = 0;
-    guidedHits = 0;
-    neeHits = 0;
-    brdfHits = 0;
-    misses = 0;
-    timedOut = 0;
-    test_point = point3(0, 0, 0); // Clear the pinned target so it locks onto a production path
+        {
+            g_heatmap_full_paths.clear(); // Wipe out training paths entirely
+        }
+        directHits = 0;
+        indirectHits = 0;
+        guidedHits = 0;
+        neeHits = 0;
+        brdfHits = 0;
+        misses = 0;
+        timedOut = 0;
+        test_point = point3(0, 0, 0); // Clear the pinned target so it locks onto a production path
 
-    auto production_start = std::chrono::system_clock::now(); // production time
-    // =========================================================================
-    // PASS 2: FINAL PRODUCTION PASS
-    // =========================================================================
-    int production_spp = 9;
-    guiding_grid.is_training = false; // Freeze modifications!
-    int N_prod = static_cast<int>(std::sqrt(production_spp));
-    std::vector<color> framebuffer(image_width * image_height);
-    std::cout << "--> Starting Production Pass with Fully Trained Guides (" << production_spp << " SPP)..." << std::endl;
+        auto production_start = std::chrono::system_clock::now(); // production time
+        // =========================================================================
+        // PASS 2: FINAL PRODUCTION PASS
+        // =========================================================================
+        guiding_grid.is_training = false;  // Freeze modifications!
+        SpatialHashGrid dummy_record_grid; // Or set guiding_grid.is_training = false
+        int N_prod = static_cast<int>(std::sqrt(production_passes[s]));
+        std::vector<color> framebuffer(image_width * image_height);
+        std::cout << "--> Starting Production Pass with Fully Trained Guides (" << production_passes[s] << " SPP)..." << std::endl;
+
+#pragma omp parallel for schedule(dynamic) // FIX parallelism for quadtree
+        for (int j = 0; j < image_height; j++)
+        {
+            for (int i = 0; i < image_width; i++)
+            {
+                color pixel_color(0, 0, 0);
+
+                for (int py = 0; py < N_prod; py++)
+                {
+                    for (int px = 0; px < N_prod; px++)
+                    {
+                        float u = i + (px + rand_double()) / N_prod;
+                        float v = j + (py + rand_double()) / N_prod;
+
+                        // dynamic alpha
+                        // Calculate global progress across all training/production batches (ranges from 0.0 to 1.0)
+                        int total_batches = num_training_iterations * samples_per_iteration + production_passes[s]; // or your total training + production batch count
+                        int current_batch = num_training_iterations * samples_per_iteration + py * px;
+                        float progress = static_cast<float>(current_batch) / static_cast<float>(total_batches);
+                        float current_alpha = min_alpha + (max_alpha - min_alpha) * progress;
+
+                        point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
+                        ray r(camera_center, pixel_center - camera_center);
+
+                        // SEED history with the camera center
+                        // color sample = guided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, true, {camera_center}, current_alpha); // true
+                        color sample = guided_rec_trace_HASH(r, bvh_tree, 0, lights, tex_manager, guiding_grid, dummy_record_grid, true, {camera_center}, current_alpha);
+                        pixel_color += sample;
+
+                        // Error
+#pragma omp critical
+                        analyzer.add_pixel_sample(i, j, sample);
+                    }
+                }
+
+                framebuffer[j * image_width + i] = pixel_color / static_cast<float>(production_passes[s]);
+            }
+
+            // progress
+            if (j % 25 == 0)
+            {
+                float percentage = float(j) / float(image_height);
+                std::cout << percentage << " done" << std::endl;
+            }
+        }
+
+        auto production_end = std::chrono::system_clock::now();
+        double production_time = std::chrono::duration<double>(production_end - production_start).count();
+
+        std::cout << "RENDERING COMPLETE in " << production_time << std::endl;
+        std::ofstream out("image.ppm");
+        out << "P3\n"
+            << image_width << ' ' << image_height << "\n255\n";
+        for (const auto &c : framebuffer)
+            write_color(out, c);
+        out.close();
+
+        // Error
+        std::vector<color> image = analyzer.load_ppm("image.ppm");
+        std::vector<color> groundtruth = analyzer.load_ppm("ajar_GT1024.ppm"); // CHANGE GROUNDTRUTH
+        float mse = analyzer.mse(image, groundtruth);
+        float psnr = analyzer.psnr(image, groundtruth);
+        float ssim = analyzer.ssim(image, groundtruth);
+        std::cout << "MSE = " << mse << ", PSNR = " << psnr << ", SSIM = " << ssim << "\n";
+        float noise = analyzer.compute_global_noise();
+        std::cout << "Image noise = " << noise << "\n";
+
+        // Visualize paths and voxels of uniform grid
+        /* std::cout << "\n==================================================" << std::endl;
+        std::cout << "--> Printing captured paths containing the test_point voxel ("
+                  << g_heatmap_full_paths.size() << " total paths found)" << std::endl;
+        std::cout << "==================================================" << std::endl;
+        // EXPORT 3D STRANDS TO OBJ
+        if (!g_heatmap_full_paths.empty())
+        {
+            std::cout << "--> Exporting 3D radiant path strands of point " << test_point << " to OBJ format..." << std::endl;
+            export_radiance_forward_paths("./objects/sibenik.obj", "sibenik.mtl", "captured_radiant_paths.obj", g_heatmap_full_paths, guiding_grid);
+        } */
+
+        // Visualize voxels of hash grid
+        // export_spatial_hash_grid("./objects/sibenik.obj", "sibenik.mtl", "captured_radiant_paths_hash.obj", guiding_grid);
+
+        // Print production path counters
+        std::cout << "direct: " << directHits << " indirect: " << indirectHits << " nee: " << neeHits << " brdf: " << brdfHits << " guided: " << guidedHits
+                  << " misses: " << misses << " timeout: " << timedOut << " total:" << directHits + neeHits + brdfHits + misses + timedOut << std::endl;
+    }
+}
+
+void camera::online_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, SpatialHashGrid &guiding_grid, TextureManager &tex_manager)
+{
+    initialize();
+    ErrorAnalyzer analyzer(image_width, image_height);
+
+    // Keep training active throughout the online render pass
+    guiding_grid.is_training = true;
+
+    int total_spp = 4; // Total samples per pixel distributed across online batches
+    int N = static_cast<int>(std::sqrt(total_spp));
+    std::vector<color> framebuffer(image_width * image_height, color(0, 0, 0));
+
+    auto online_start = std::chrono::system_clock::now();
+    std::cout << "--> Starting Online Training & Rendering Pass (" << total_spp << " SPP total)..." << std::endl;
+
+    // Run progressive online batches/samples
+    for (int sample_batch = 0; sample_batch < total_spp; sample_batch++)
+    {
+        std::cout << "--> Processing Online Batch " << (sample_batch + 1) << "/" << total_spp << "..." << std::endl;
+
+#pragma omp parallel for schedule(dynamic)
+        for (int j = 0; j < image_height; j++)
+        {
+            for (int i = 0; i < image_width; i++)
+            {
+                // Stratified or jittered sample offset per batch
+                float u = i + rand_double();
+                float v = j + rand_double();
+
+                point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
+                ray r(camera_center, pixel_center - camera_center);
+
+                // Trace: reads current guiding distribution AND writes new radiance records back into guiding_grid
+                color sample = guided_rec_trace_HASH(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding_grid, true, {camera_center}, 0); // TODO
+
+                int idx = j * image_width + i;
+#pragma omp critical
+                {
+                    framebuffer[idx] += sample;
+                    analyzer.add_pixel_sample(i, j, sample);
+                }
+            }
+
+            // Progress print matching your production style
+            if (j % 25 == 0)
+            {
+                float percentage = float(j) / float(image_height);
+                // Optional: keep output clean by printing only on specific threads or batch intervals
+            }
+        }
+
+        // periodic update
+        bool should_rebuild = false;
+        // Example 1: Exponential backoff (rebuilds at batch 1, 2, 4, 8, 16, ...)
+        if (sample_batch == 1 || sample_batch == 2 || sample_batch == 4 ||
+            sample_batch == 8 || sample_batch == 16 || sample_batch % 32 == 0)
+        {
+            should_rebuild = true;
+        }
+
+        if (should_rebuild)
+        {
+            std::cout << "--> Rebuilding guiding distributions at batch " << sample_batch << "..." << std::endl;
+            guiding_grid.finalize_and_build_distributions();
+        }
+    }
+
+    auto online_end = std::chrono::system_clock::now();
+    double online_time = std::chrono::duration<double>(online_end - online_start).count();
+
+    std::cout << "ONLINE RENDERING COMPLETE in " << online_time << " seconds." << std::endl;
+
+    // Normalize framebuffer by total SPP and export PPM
+    std::ofstream out("image.ppm");
+    out << "P3\n"
+        << image_width << ' ' << image_height << "\n255\n";
 
     for (int j = 0; j < image_height; j++)
     {
         for (int i = 0; i < image_width; i++)
         {
-            color pixel_color(0, 0, 0);
+            int idx = j * image_width + i;
+            color final_col = framebuffer[idx] / static_cast<float>(total_spp);
+            write_color(out, final_col);
+        }
+    }
+    out.close();
+}
 
-            for (int py = 0; py < N_prod; py++)
+void camera::hybrid_render(const std::vector<object> &world, std::vector<area_light> &lights, bvh &bvh_tree, SpatialHashGrid &guiding_grid, TextureManager &tex_manager)
+{
+    initialize();
+    ErrorAnalyzer analyzer(image_width, image_height);
+    guiding_grid.is_training = true;
+
+    int total_spp = 16;
+    int warmup_batches = 4; // Run a couple of quick batches just to bootstrap the hash grid
+
+    std::vector<color> framebuffer(image_width * image_height, color(0, 0, 0));
+    auto start_time = std::chrono::system_clock::now();
+
+    // =========================================================================
+    // PHASE 1: OFFLINE WARM-UP (Bootstrap Guiding Grid)
+    // =========================================================================
+    std::cout << "--> Starting Offline Warm-up (" << warmup_batches << " batches)..." << std::endl;
+
+    for (int batch = 0; batch < warmup_batches; batch++)
+    {
+#pragma omp parallel for schedule(dynamic)
+        for (int j = 0; j < image_height; j++)
+        {
+            for (int i = 0; i < image_width; i++)
             {
-                for (int px = 0; px < N_prod; px++)
+                float u = i + rand_double();
+                float v = j + rand_double();
+                point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
+                ray r(camera_center, pixel_center - camera_center);
+
+                // Trace to record radiance into grid, but ignore/discard the color result
+                // guided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, true, {camera_center}, 0.5f);
+                guided_rec_trace_HASH(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding_grid, true, {camera_center}, 0); // TODO
+            }
+        }
+        guiding_grid.finalize_and_build_distributions();
+    }
+
+    std::cout << "--> Warm-up complete. Starting Online Progressive Production Pass..." << std::endl;
+
+    // =========================================================================
+    // PHASE 2: ONLINE PROGRESSIVE PRODUCTION (Render + Continuous Training)
+    // =========================================================================
+    for (int sample_batch = 0; sample_batch < (total_spp - warmup_batches); sample_batch++)
+    {
+#pragma omp parallel for schedule(dynamic)
+        for (int j = 0; j < image_height; j++)
+        {
+            for (int i = 0; i < image_width; i++)
+            {
+                float u = i + rand_double();
+                float v = j + rand_double();
+                point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
+                ray r(camera_center, pixel_center - camera_center);
+
+                // Trace: reads guides, writes new radiance, returns color sample
+                // color sample = guided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, true, {camera_center}, 0.5);
+                color sample = guided_rec_trace_HASH(r, bvh_tree, 0, lights, tex_manager, guiding_grid, guiding_grid, true, {camera_center}, 0); // TODO
+
+                int idx = j * image_width + i;
+#pragma omp critical
                 {
-                    float u = i + (px + rand_double()) / N_prod;
-                    float v = j + (py + rand_double()) / N_prod;
-
-                    point3 pixel_center = pixel_top_left + u * pixel_delta_h + v * pixel_delta_v;
-                    ray r(camera_center, pixel_center - camera_center);
-
-                    // SEED history with the camera center
-                    pixel_color += guided_rec_trace(r, bvh_tree, 0, lights, tex_manager, guiding_grid, true, {camera_center}); // true
+                    framebuffer[idx] += sample;
+                    analyzer.add_pixel_sample(i, j, sample);
                 }
             }
+        }
 
-            framebuffer[j * image_width + i] = pixel_color / static_cast<float>(production_spp);
+        // Adaptive or periodic rebuild during production
+        if (sample_batch > 0 && (sample_batch == 1 || sample_batch % 4 == 0))
+        {
+            guiding_grid.finalize_and_build_distributions();
         }
     }
 
-    auto production_end = std::chrono::system_clock::now();
-    double production_time = std::chrono::duration<double>(production_end - production_start).count();
+    auto end_time = std::chrono::system_clock::now();
+    double total_time = std::chrono::duration<double>(end_time - start_time).count();
+    std::cout << "HYBRID RENDER COMPLETE in " << total_time << " seconds." << std::endl;
 
-    std::cout << "RENDERING COMPLETE in " << production_time << std::endl;
+    // Export final image
     std::ofstream out("image.ppm");
     out << "P3\n"
         << image_width << ' ' << image_height << "\n255\n";
-    for (const auto &c : framebuffer)
-        write_color(out, c);
-    out.close();
-
-    // =========================================================================
-    // PRINT PATHS TERMINAL PROFILE WITH PER-VERTEX RADIANCE
-    // =========================================================================
-    std::cout << "\n==================================================" << std::endl;
-    std::cout << "--> Printing captured paths containing the test_point voxel ("
-              << g_heatmap_full_paths.size() << " total paths found)" << std::endl;
-    std::cout << "==================================================" << std::endl;
-
-    /* for (size_t path_idx = 0; path_idx < g_heatmap_full_paths.size(); ++path_idx)
+    for (int j = 0; j < image_height; j++)
     {
-        const auto &path = g_heatmap_full_paths[path_idx];
-
-         std::cout << "Path #" << path_idx << " [Length: " << path.vertices.size() << " vertices]:\n";
-
-        for (size_t v_idx = 0; v_idx < path.vertices.size(); ++v_idx)
+        for (int i = 0; i < image_width; i++)
         {
-            const auto &pt = path.vertices[v_idx];
-
-            std::cout << "  Vertex [" << v_idx << "]: ("
-                      << pt.x() << ", " << pt.y() << ", " << pt.z() << ")";
-
-            if (v_idx < path.vertex_radiance.size())
-            {
-                const auto &rad = path.vertex_radiance[v_idx];
-                std::cout << " | Throughput Radiance -> [R: " << rad.x()
-                          << ", G: " << rad.y()
-                          << ", B: " << rad.z() << "]";
-            }
-            else
-            {
-                std::cout << " | Throughput Radiance -> [R: 0, G: 0, B: 0] (Primary Lens Origin)";
-            }
-
-            if (guiding_grid.get_voxel_index(pt) == guiding_grid.get_voxel_index(test_point))
-            {
-                std::cout << "  <-- MATCHES TEST_POINT VOXEL";
-            }
-            std::cout << "\n";
+            int idx = j * image_width + i;
+            color final_col = framebuffer[idx] / static_cast<float>(total_spp - warmup_batches);
+            write_color(out, final_col);
         }
-        std::cout << "============================================" << std::endl;
-    } */
-
-    // =========================================================================
-    // EXPORT 3D STRANDS TO OBJ
-    // =========================================================================
-    if (!g_heatmap_full_paths.empty())
-    {
-        std::cout << "--> Exporting 3D radiant path strands of point " << test_point << " to OBJ format..." << std::endl;
-        export_radiance_forward_paths("./objects/CornellBox-Empty-RG.obj", "CornellBox-Empty-RG.mtl", "captured_radiant_paths.obj", g_heatmap_full_paths, guiding_grid);
     }
+    out.close();
 }

@@ -5,30 +5,6 @@
 
 #include <string>
 
-enum class material_type
-{
-    diffuse,
-    specular,
-    mirror,
-    transparent,
-    light
-};
-
-enum class material_preset
-{
-    diffuse,
-    metal,
-    mirror,
-    plastic1,
-    plastic2,
-    plastic3,
-    plastic4,
-    glass,
-    frosted_glass,
-    ice,
-    light
-};
-
 class material
 {
 public:
@@ -68,6 +44,11 @@ public:
     std::string diffuse_texname;
     bool has_diffuse_tex;
     int diffuse_tex_id = -1;
+
+    // emissive
+    std::string emissive_texname;
+    bool has_emissive_tex;
+    int emissive_tex_id = -1;
 
     bool is_emissive() const
     {
@@ -132,7 +113,7 @@ inline vec3 fresnel_schlick_vec(float cosTheta, const vec3 &F0)
     return F0 + (vec3(1.0f, 1.0f, 1.0f) - F0) * pow(1.0f - cosTheta, 5.0f);
 }
 
-inline material make_material(material_preset preset, color base)
+/* inline material make_material(material_preset preset, color base)
 {
     material m{};
 
@@ -177,12 +158,13 @@ inline material make_material(material_preset preset, color base)
         m.is_delta_specular = true;
         break;
 
-        /* case material_preset::plastic:
-            m.roughness = 0.3f;
-            m.metallic = 0.0f;
-            m.transparency = 0.0f;
-            m.ior = 1.5f;
-            break; */
+    case material_preset::plastic:
+        m.roughness = 0.3f;
+        m.metallic = 0.0f;
+        m.transparency = 0.0f;
+        m.ior = 1.5f;
+        break;
+
     case material_preset::plastic1:
         // Glossy white plastic
         m.diffuse = color(0.9f, 0.9f, 0.9f);
@@ -236,18 +218,17 @@ inline material make_material(material_preset preset, color base)
         m.absorption = color(0.9f, 0.95f, 1.0f); // slight blue tint
         break;
 
-        /*case material_preset::light:
-            m.roughness = 0.0f;
-            m.transparency = 0.0f;
-            m.ior = 1.0f;
-            m.emission = color(50, 50, 50);
-            break;*/
+    case material_preset::light:
+        m.roughness = 0.0f;
+        m.transparency = 0.0f;
+        m.ior = 1.0f;
+        m.emission = color(50, 50, 50);
+        break;
     }
-
     return m;
-}
+}*/
 
-inline material mat_from_type(material_type mt, color base)
+/* inline material mat_from_type(material_type mt, color base)
 {
     material m{};
 
@@ -309,6 +290,6 @@ inline material mat_from_type(material_type mt, color base)
     }
 
     return m;
-}
+} */
 
 #endif

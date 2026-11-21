@@ -1,18 +1,17 @@
-# setze CMake Version 3.0 voraus
 cmake_minimum_required(VERSION 3.16...3.27)
 
-# Projektname fuer CMake (MOVED UP)
-project(Proku)
+# 1. Project name MUST come first
+project(Proku CXX)
 
-# C++11 Standard verwenden
-set(CMAKE_CXX_STANDARD 11)
+# 2. Set C++17 Standard globally
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Externe Headerdateien
 include_directories(external src)
-
-# Sucht automatisch alle .cpp-Dateien im src-Ordner
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 
-# die Liste aller ausfuehrbaren Programme (UPDATED TO INCLUDE ALL CPP FILES)
 add_executable(main ${SOURCES})
+
+# 3. Explicitly enforce C++17 directly on the executable target (Guarantees IntelliSense reads it)
+target_compile_features(main PUBLIC cxx_std_17)

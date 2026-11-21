@@ -1,4 +1,5 @@
 #include "../hpp/color.hpp"
+#include <iostream>
 
 color clamp_color(const color &c)
 {
@@ -66,6 +67,8 @@ void write_color(std::ostream &out, const color &pixel_color)
     int gbyte = static_cast<int>(255.999 * mapped.y());
     int bbyte = static_cast<int>(255.999 * mapped.z());
 
+    if (rbyte < 0 || gbyte < 0 || bbyte < 0)
+        std::cout << "ERROR PIXEL" << std::endl;
     out << rbyte << ' ' << gbyte << ' ' << bbyte << '\n';
 }
 

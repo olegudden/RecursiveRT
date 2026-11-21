@@ -2,15 +2,12 @@
 #include <iostream>
 #include <cstdint>
 
-triangle::triangle(const point3 &v0, const point3 &v1, const point3 &v2)
-    : v0(v0), v1(v1), v2(v2) {}
-
 triangle::triangle(const point3 &a, const point3 &b, const point3 &c,
                    const vec3 &n0, const vec3 &n1, const vec3 &n2,
                    const vec3 &uv0, const vec3 &uv1, const vec3 &uv2,
-                   const material &mat, const material_type &mt,
+                   const material &mat,
                    object *parent, const float area) : v0(a), v1(b), v2(c), n0(n0), n1(n1), n2(n2), uv0(uv0), uv1(uv1), uv2(uv2),
-                                                       mat(mat), mt(mt), obj_ptr(parent), area(area) {}
+                                                       mat(mat), obj_ptr(parent), area(area) {}
 
 /* bool triangle::hit(const ray &r, float t_min, float t_max, hit_info &hi) const
 {
@@ -109,7 +106,6 @@ bool triangle::hit(const ray &r, float t_min, float t_max, hit_info &hi) const
 
     hi.p = r.at(t);
     hi.mat = this->mat;
-    hi.mt = this->mt;
 
     // textures
     hi.u = w * uv0.x() + u * uv1.x() + v * uv2.x();

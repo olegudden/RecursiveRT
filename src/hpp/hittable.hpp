@@ -12,7 +12,7 @@ struct hit_info
     vec3 shading_normal;
     vec3 geometric_normal; // face normal (for refraction/enter-exit/offsets)
     material mat;
-    material_type mt;
+    // material_type mt;
     bool front_face;
     float u, v;
     int mesh_id = -1;

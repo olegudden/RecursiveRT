@@ -11,6 +11,10 @@ struct light_sample
     point3 p;
     vec3 normal;
     float pdf_area;
+
+    // texture
+    float u, v;
+    material mat;
 };
 
 struct area_light
@@ -30,7 +34,7 @@ struct area_light
 float rand_float();
 float random_float(float min, float max);
 point3 sample(vec3 &tri_normal, const area_light &light, float &out_pdf);
-point3 sample_stratified(vec3 &tri_normal, const area_light &light, float &out_pdf, float r1, float r2);
+point3 sample_stratified(vec3 &tri_normal, const area_light &light, float &out_pdf, float r1, float r2, vec3 &out_uv, material &out_mat);
 point3 sample_area_light(const area_light &light);
 std::vector<point3> uniform_sample_light(const area_light &L, int N);
 std::vector<point3> stratified_sample_light(const area_light &light, int N);

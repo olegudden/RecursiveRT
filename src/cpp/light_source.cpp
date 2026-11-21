@@ -1,8 +1,14 @@
 #include "../hpp/light_source.hpp"
+#include <chrono>
+#include <omp.h> // For omp_get_thread_num()
 
 float rand_float()
 {
-    static thread_local std::mt19937 generator(std::random_device{}());
+    // Seed using high-resolution clock + OpenMP thread ID
+    static thread_local std::mt19937 generator(
+        static_cast<unsigned int>(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count() ^
+            (omp_get_thread_num() + 1)));
     static thread_local std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
     return distribution(generator);
 }
@@ -47,7 +53,7 @@ point3 sample(vec3 &tri_normal, const area_light &light, float &out_pdf)
     return tri.v0 + u * (tri.v1 - tri.v0) + v * (tri.v2 - tri.v0);
 }
 
-point3 sample_stratified(vec3 &tri_normal, const area_light &light, float &out_pdf, float r1, float r2)
+point3 sample_stratified(vec3 &tri_normal, const area_light &light, float &out_pdf, float r1, float r2, vec3 &out_uv, material &out_mat)
 {
     if (light.tris.empty())
     {
@@ -72,6 +78,10 @@ point3 sample_stratified(vec3 &tri_normal, const area_light &light, float &out_p
 
     float w = 1.0f - u - v;
     tri_normal = unit_vector(w * tri.n0 + u * tri.n1 + v * tri.n2);
+
+    out_uv = w * tri.uv0 + u * tri.uv1 + v * tri.uv2;
+    out_mat = tri.mat;
+
     out_pdf = 1.0f / light.area;
 
     return tri.v0 + u * (tri.v1 - tri.v0) + v * (tri.v2 - tri.v0);

@@ -46,7 +46,7 @@ void bvh_stats::collect_bvh_stats(const bvh_node *node, int depth, bvh_stats &st
     collect_bvh_stats(node->right.get(), depth + 1, stats);
 }
 
-// ----------------------- bvh -----------------------
+// ----------------------- bvh intersection test -------------
 bool bvh::hit(const ray &r, float t_min, float t_max, hit_info &hi) const
 {
     return hit_node(root.get(), r, t_min, t_max, hi);
@@ -617,7 +617,7 @@ std::unique_ptr<bvh_node> bvh::build_bvh_exact_sah(std::vector<triangle> &tris, 
         std::vector<aabb> right_bounds(tris.size());
         std::vector<int> right_count(tris.size());
         aabb right_box;
-        for (int i = (int)tris.size() - 1; i >= 0; --i)
+        for (int i = (int)tris.size() - 1; i >= 0; i--)
         {
             right_box = (i == (int)tris.size() - 1) ? aabb::from_triangle(tris[i])
                                                     : aabb::surrounding_box(right_box, aabb::from_triangle(tris[i]));
